@@ -101,20 +101,6 @@ _pidfd_open(pid_t pid, int flags)
 }
 
 static int
-open_pidfd(pid_t pid)
-{
-	int fd = -1;
-	if ((fd = _pidfd_open(pid, 0)) >= 0) {
-		return fd;
-	}
-	if (errno != ENOSYS)
-		return -1;
-	char path[PATH_MAX];
-	snprintf(path, sizeof path, "/proc/%d", pid);
-	return open(path, O_DIRECTORY|O_RDONLY|O_CLOEXEC);
-}
-
-static int
 get_message_sender_uid(const char *sender, uid_t *uid)
 {
 	sd_bus_message *reply = NULL;
@@ -189,7 +175,7 @@ find_process(pid_t pid)
 			return proc;
 	}
 
-	int pidfd = open_pidfd(pid);
+	int pidfd = _pidfd_open(pid, 0);
 	if (pidfd == -1)
 		return NULL;
 
