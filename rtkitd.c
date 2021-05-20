@@ -179,7 +179,7 @@ get_message_sender_pid(const char *sender, pid_t *pid)
 }
 
 static struct user *
-find_user(uid_t uid)
+user_find(uid_t uid)
 {
 	struct user *user;
 	TAILQ_FOREACH(user, &users, entries) {
@@ -254,7 +254,7 @@ lookup(struct user **user, struct process **process,
 	if ((r = get_message_sender_uid(sender, &uid)) < 0)
 		return r;
 
-	if ((*user = find_user(uid)) == NULL)
+	if ((*user = user_find(uid)) == NULL)
 		return -errno;
 
 	if ((*process = find_process(pid)) == NULL)
