@@ -482,12 +482,12 @@ thread_reset(struct thread *thread)
 	int r = 0;
 
 	if (_sched_setscheduler(thread->tid, SCHED_OTHER, &param) == -1) {
+		r = -errno;
 		fprintf(stderr, "Failed to demote thread %d: %s\n", thread->tid, strerror(errno));
-		r = -1;
 	}
 	if (setpriority(PRIO_PROCESS, thread->tid, 0) == -1) {
+		r = -errno;
 		fprintf(stderr, "Failed to demote thread %d: %s\n", thread->tid, strerror(errno));
-		r = -1;
 	}
 	return r;
 }
