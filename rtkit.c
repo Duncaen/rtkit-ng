@@ -1,6 +1,7 @@
 /* 
  * Copyright 2009 Lennart Poettering
  * Copyright 2010 David Henningsson <diwic@ubuntu.com>
+ * Copyright 2021 Duncan Overbruck <mail@duncano.de>
  * 
  * Permission is hereby granted, free of charge, to any person
  * obtaining a copy of this software and associated documentation files
