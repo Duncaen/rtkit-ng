@@ -31,10 +31,12 @@
 #include <limits.h>
 #include <sched.h>
 #include <signal.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <syscall.h>
+#include <time.h>
 #include <unistd.h>
 
 #ifdef HAVE_LIBSYSTEMD
@@ -79,6 +81,8 @@ struct process {
 
 struct user {
 	uid_t uid;
+	time_t timestamp;
+	size_t num_actions;
 	TAILQ_ENTRY(user) entries;
 };
 
@@ -102,6 +106,12 @@ static unsigned long long rttime_usec_max = 200000ULL; /* 200 ms */
 
 /* Scheduling policy to use */
 static int sched_policy = SCHED_RR;
+
+/* Refuse further requests if one user issues more than ACTIONS_PER_BURST_MAX in this time */
+static unsigned actions_burst_sec = 20;
+
+/* Refuse further requests if one user issues more than this many in ACTIONS_BURST_SEC time */
+static unsigned actions_per_burst_max = 25;
 
 static sd_bus *bus;
 static int epollfd;
@@ -179,8 +189,16 @@ find_user(uid_t uid)
 	if ((user = calloc(1, sizeof *user)) == NULL)
 		return NULL;
 	user->uid = uid;
+	user->timestamp = time(NULL);
 	TAILQ_INSERT_TAIL(&users, user, entries);
 	return user;
+}
+
+static bool
+user_in_burst(struct user *user)
+{
+	time_t now = time(NULL);
+	return now < user->timestamp + actions_burst_sec;
 }
 
 static struct process *
@@ -290,11 +308,26 @@ check_user(struct process *proc, struct user *user)
 {
 	struct stat st;
 	char path[PATH_MAX];
+
 	snprintf(path, sizeof path, "/proc/%d", proc->pid);
 	if (stat(path, &st) == -1)
 		return -errno;
 	if (st.st_uid != user->uid)
 		return -EPERM;
+
+	if (!user_in_burst(user)) {
+		/* Restart burst phase */
+		user->timestamp = time(NULL);
+		user->num_actions = 0;
+	} else {
+		user->num_actions++;
+		if (user->num_actions >= actions_per_burst_max) {
+			fprintf(stderr, "Warning: Reached burst limit for user %d, denying request.\n",
+					user->uid);
+			return -EBUSY;
+		}
+	}
+
 	return 0;
 }
 
