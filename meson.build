@@ -11,12 +11,6 @@ project(
 
 cc = meson.get_compiler('c')
 
-epoll = dependency('', required: false)
-if (not cc.has_function('timerfd_create', prefix: '#include <sys/timerfd.h>') or
-    not cc.has_function('signalfd', prefix: '#include <sys/signalfd.h>'))
-	epoll = dependency('epoll-shim')
-endif
-
 if get_option('sd-bus-provider') == 'auto'
 	assert(get_option('auto_features').auto(), 'sd-bus-provider must not be set to auto since auto_features != auto')
 	sdbus = dependency('libsystemd',
