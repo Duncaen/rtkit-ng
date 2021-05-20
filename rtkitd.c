@@ -44,6 +44,10 @@
 #error "missing sd-bus implementation"
 #endif
 
+#ifdef HAVE_LIBSYSTEMD
+#include <systemd/sd-daemon.h>
+#endif
+
 #ifndef SCHED_RESET_ON_FORK
 /* "Your libc lacks the definition of SCHED_RESET_ON_FORK. We'll now define it ourselves, however make sure your kernel is new enough! */
 #define SCHED_RESET_ON_FORK 0x40000000
@@ -575,6 +579,10 @@ main(int argc, char *argv[])
 		fprintf(stderr, "Failed to add epoll event: %s\n", strerror(errno));
 		return 1;
 	}
+
+#ifdef HAVE_LIBSYSTEMD
+	sd_notify(0, "STATUS=Running.");
+#endif
 
 	for (;;) {
 		int n = epoll_wait(epollfd, &event, 1, -1);
