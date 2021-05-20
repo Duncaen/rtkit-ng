@@ -74,8 +74,10 @@ static struct properties props = {
 };
 
 struct process {
+	struct user *user;
 	pid_t pid;
-	int pidfd;
+	pid_t tid;
+	int fd;
 	TAILQ_ENTRY(process) entries;
 };
 
@@ -83,11 +85,11 @@ struct user {
 	uid_t uid;
 	time_t timestamp;
 	size_t num_actions;
+	TAILQ_HEAD(, process) processes;
 	TAILQ_ENTRY(user) entries;
 };
 
 static TAILQ_HEAD(, user) users = TAILQ_HEAD_INITIALIZER(users);
-static TAILQ_HEAD(, process) processes = TAILQ_HEAD_INITIALIZER(processes);
 
 /* If we actually execute a request we temporarily upgrade our realtime priority to this level */
 static unsigned our_realtime_priority = 21;
@@ -190,6 +192,7 @@ user_find(uid_t uid)
 		return NULL;
 	user->uid = uid;
 	user->timestamp = time(NULL);
+	TAILQ_INIT(&user->processes);
 	TAILQ_INSERT_TAIL(&users, user, entries);
 	return user;
 }
@@ -201,66 +204,133 @@ user_in_burst(struct user *user)
 	return now < user->timestamp + actions_burst_sec;
 }
 
+static int
+user_check_burst(struct user *user)
+{
+	if (!user_in_burst(user)) {
+		/* Restart burst phase */
+		user->timestamp = time(NULL);
+		user->num_actions = 0;
+		return 0;
+	}
+	user->num_actions++;
+	if (user->num_actions >= actions_per_burst_max) {
+		fprintf(stderr, "Warning: Reached burst limit for user %d, denying request.\n",
+				user->uid);
+		return -EBUSY;
+	}
+	return 0;
+}
+
+static void
+process_free(struct process *proc)
+{
+	TAILQ_REMOVE(&proc->user->processes, proc, entries);
+	if (epoll_ctl(epollfd, EPOLL_CTL_DEL, proc->fd, NULL) == -1) {
+		fprintf(stderr, "Failed to delete epoll event: %s\n", strerror(errno));
+	}
+	close(proc->fd);
+	free(proc);
+}
+
 static struct process *
-find_process(pid_t pid)
+user_process_find(struct user *user, pid_t pid, pid_t tid)
 {
 	struct process *proc;
 
-	TAILQ_FOREACH(proc, &processes, entries) {
-		if (proc->pid == pid)
+	TAILQ_FOREACH(proc, &user->processes, entries) {
+		if (proc->tid == tid)
 			return proc;
 	}
 
-	int pidfd = _pidfd_open(pid, 0);
-	if (pidfd == -1)
+	int fd = _pidfd_open(tid, 0);
+	if (fd == -1)
 		return NULL;
 
 	if ((proc = calloc(1, sizeof *proc)) == NULL) {
-		close(pidfd);
+		close(fd);
 		return NULL;
 	}
+	proc->user = user;
 	proc->pid = pid;
-	proc->pidfd = pidfd;
+	proc->tid = tid;
+	proc->fd = fd;
+	TAILQ_INSERT_TAIL(&user->processes, proc, entries);
 
 	struct epoll_event event = {
 		.events = EPOLLIN,
 		.data.ptr = proc,
 	};
-	if (epoll_ctl(epollfd, EPOLL_CTL_ADD, pidfd, &event) == -1) {
-		fprintf(stderr, "Failed to add epoll event: %s\n", strerror(errno));
-		close(pidfd);
-		free(proc);
+	if (epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, &event) == -1) {
+		process_free(proc);
 		return NULL;
 	}
 
-	TAILQ_INSERT_TAIL(&processes, proc, entries);
 	return proc;
 }
 
 static int
-lookup(struct user **user, struct process **process,
-		sd_bus_message *m, pid_t pid, pid_t tid)
+tid_check_uid(pid_t pid, pid_t tid, uid_t uid)
 {
-	uid_t uid = -1;
-	int r;
-	const char *sender;
+	struct stat st;
+	char path[PATH_MAX];
 
-	if ((sender = sd_bus_message_get_sender(m)) == NULL)
-		return -ENODATA;
+	snprintf(path, sizeof path, "/proc/%d/task/%d", pid, tid);
 
-	if (pid == -1 && (r = get_message_sender_pid(sender, &pid)) < 0)
-		return r;
-
-	if ((r = get_message_sender_uid(sender, &uid)) < 0)
-		return r;
-
-	if ((*user = user_find(uid)) == NULL)
+	if (stat(path, &st) == -1)
 		return -errno;
-
-	if ((*process = find_process(pid)) == NULL)
-		return -errno;
+	if (st.st_uid != uid)
+		return -EPERM;
 
 	return 0;
+}
+
+static int
+tid_check_rttime(pid_t tid)
+{
+	struct rlimit limit;
+	if (prlimit(tid, RLIMIT_RTTIME, NULL, &limit) == -1)
+		return -errno;
+	if (limit.rlim_max > rttime_usec_max)
+		return -EPERM;
+	return 0;
+}
+
+static struct process *
+process_get(sd_bus_message *m, pid_t pid, pid_t tid)
+{
+	const char *sender;
+	struct user *user;
+	struct process *proc;
+	uid_t uid = -1;
+	int r;
+
+	if ((sender = sd_bus_message_get_sender(m)) == NULL) {
+		errno = ENODATA;
+		return NULL;
+	}
+	if (pid == -1 && (r = get_message_sender_pid(sender, &pid)) < 0) {
+		errno = -r;
+		return NULL;
+	}
+	if ((r = get_message_sender_uid(sender, &uid)) < 0) {
+		errno = -r;
+		return NULL;
+	}
+	if ((user = user_find(uid)) == NULL)
+		return NULL;
+
+	if ((r = tid_check_uid(pid, tid, user->uid)) < 0 ||
+	    (r = tid_check_rttime(tid)) < 0 ||
+	    (r = user_check_burst(user)) < 0) {
+		errno = -r;
+		return NULL;
+	}
+
+	if ((proc = user_process_find(user, pid, tid)) == NULL)
+		return NULL;
+
+	return proc;
 }
 
 
@@ -279,7 +349,7 @@ get_message_creds_pid(sd_bus_message *m, pid_t *pid)
 #endif
 
 static int
-set_realtime(struct process *proc, uint32_t priority)
+process_set_realtime(struct process *proc, uint32_t priority)
 {
 	struct sched_param param = {0};
 
@@ -304,95 +374,41 @@ set_realtime(struct process *proc, uint32_t priority)
 }
 
 static int
-check_user(struct process *proc, struct user *user)
-{
-	struct stat st;
-	char path[PATH_MAX];
-
-	snprintf(path, sizeof path, "/proc/%d", proc->pid);
-	if (stat(path, &st) == -1)
-		return -errno;
-	if (st.st_uid != user->uid)
-		return -EPERM;
-
-	if (!user_in_burst(user)) {
-		/* Restart burst phase */
-		user->timestamp = time(NULL);
-		user->num_actions = 0;
-	} else {
-		user->num_actions++;
-		if (user->num_actions >= actions_per_burst_max) {
-			fprintf(stderr, "Warning: Reached burst limit for user %d, denying request.\n",
-					user->uid);
-			return -EBUSY;
-		}
-	}
-
-	return 0;
-}
-
-static int
-check_rttime(struct process *proc)
-{
-	struct rlimit limit;
-	if (prlimit(proc->pid, RLIMIT_RTTIME, NULL, &limit) == -1)
-		return -errno;
-	if (limit.rlim_max > rttime_usec_max)
-		return -EPERM;
-	return 0;
-}
-
-static int
 make_thread_realtime(sd_bus_message *m, void *userdata, sd_bus_error *error)
 {
+	struct process *proc;
 	int r;
 	uint64_t tid;
 	uint32_t priority;
-	struct user *user = NULL;
-	struct process *process = NULL;
 
 	if ((r = sd_bus_message_read(m, "tu", &tid, &priority)) < 0) {
 		fprintf(stderr, "Failed to parse parameters: %s\n", strerror(-r));
 		return r;
 	}
-	if ((r = lookup(&user, &process, m, -1, tid)) < 0) {
+	if ((proc = process_get(m, -1, tid)) == NULL)
+		return -errno;
+	if ((r = process_set_realtime(proc, priority)) < 0)
 		return r;
-	}
-	if ((r = check_user(process, user)) < 0 ||
-	    (r = check_rttime(process)) < 0) {
-		return r;
-	}
-	if ((r = set_realtime(process, priority)) < 0) {
-		fprintf(stderr, "set_realtime: %s\n", strerror(-r));
-		return r;
-	}
 	return sd_bus_reply_method_return(m, "");
 }
 
 static int
 make_thread_realtime_with_pid(sd_bus_message *m, void *userdata, sd_bus_error *error)
 {
+	struct process *proc;
 	pid_t pid;
 	uint64_t tid;
 	uint32_t priority;
 	int r;
-	struct user *user = NULL;
-	struct process *process = NULL;
 
 	if ((r = sd_bus_message_read(m, "ttu", &pid, &tid, &priority)) < 0) {
 		fprintf(stderr, "Failed to parse parameters: %s\n", strerror(-r));
 		return r;
 	}
-	if ((r = lookup(&user, &process, m, pid, tid)) < 0) {
+	if ((proc = process_get(m, -1, tid)) == NULL)
+		return -errno;
+	if ((r = process_set_realtime(proc, priority)) < 0)
 		return r;
-	}
-	if ((r = check_user(process, user)) < 0 ||
-	    (r = check_rttime(process)) < 0) {
-		return r;
-	}
-	if ((r = set_realtime(process, priority)) < 0) {
-		return r;
-	}
 	return sd_bus_reply_method_return(m, "");
 }
 
@@ -419,23 +435,18 @@ set_high_priority(struct process *proc, int32_t priority)
 static int
 make_thread_high_priority(sd_bus_message *m, void *userdata, sd_bus_error *error)
 {
+	struct process *proc;
 	int r;
 	pid_t tid;
 	int32_t priority;
-	struct user *user = NULL;
-	struct process *process = NULL;
 
 	if ((r = sd_bus_message_read(m, "ti", &tid, &priority)) < 0) {
 		fprintf(stderr, "Failed to parse parameters: %s\n", strerror(-r));
 		return r;
 	}
-	if ((r = lookup(&user, &process, m, -1, tid)) < 0) {
-		return r;
-	}
-	if ((r = check_user(process, user)) < 0) {
-		return r;
-	}
-	if ((r = set_high_priority(process, priority)) < 0) {
+	if ((proc = process_get(m, -1, tid)) == NULL)
+		return -errno;
+	if ((r = set_high_priority(proc, priority)) < 0) {
 		fprintf(stderr, "set_high_priority: %s\n", strerror(-r));
 		return r;
 	}
@@ -445,24 +456,19 @@ make_thread_high_priority(sd_bus_message *m, void *userdata, sd_bus_error *error
 static int
 make_thread_high_priority_with_pid(sd_bus_message *m, void *userdata, sd_bus_error *error)
 {
+	struct process *proc;
 	int r;
 	pid_t pid;
 	pid_t tid;
 	int32_t priority;
-	struct user *user = NULL;
-	struct process *process = NULL;
 
 	if ((r = sd_bus_message_read(m, "tti", &pid, &tid, &priority)) < 0) {
 		fprintf(stderr, "Failed to parse parameters: %s\n", strerror(-r));
 		return r;
 	}
-	if ((r = lookup(&user, &process, m, pid, tid)) < 0) {
-		return r;
-	}
-	if ((r = check_user(process, user)) < 0) {
-		return r;
-	}
-	if ((r = set_high_priority(process, priority)) < 0) {
+	if ((proc = process_get(m, -1, tid)) == NULL)
+		return -errno;
+	if ((r = set_high_priority(proc, priority)) < 0) {
 		return r;
 	}
 	return sd_bus_reply_method_return(m, "");
@@ -500,12 +506,15 @@ method_reset_all(sd_bus_message *m, void *userdata, sd_bus_error *error)
 static void
 reset_known(void)
 {
+	struct user *user;
 	struct process *proc;
 	fprintf(stderr, "Demoting known real-time threads.\n");
 	size_t n = 0;
-	TAILQ_FOREACH(proc, &processes, entries) {
-		if (process_reset(proc) == 0)
-			n++;
+	TAILQ_FOREACH(user, &users, entries) {
+		TAILQ_FOREACH(proc, &user->processes, entries) {
+			if (process_reset(proc) == 0)
+				n++;
+		}
 	}
 	fprintf(stderr, "Demoted %zu threads.\n", n);
 }
@@ -666,13 +675,7 @@ main(int argc, char *argv[])
 				break;
 			}
 		} else {
-			struct process *proc = event.data.ptr;
-			TAILQ_REMOVE(&processes, proc, entries);
-			if (epoll_ctl(epollfd, EPOLL_CTL_DEL, proc->pidfd, NULL) == -1) {
-				fprintf(stderr, "Failed to delete epoll event: %s\n", strerror(errno));
-			}
-			close(proc->pidfd);
-			free(proc);
+			process_free(event.data.ptr);
 		}
 	}
 
