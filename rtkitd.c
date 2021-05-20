@@ -60,7 +60,7 @@
 #endif
 
 struct properties {
-	int64_t rtt_usec_max;
+	uint64_t rtt_usec_max;
 	int32_t max_realtime_priority;
 	int32_t min_nice_level;
 };
