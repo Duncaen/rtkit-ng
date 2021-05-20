@@ -129,56 +129,6 @@ _pidfd_open(pid_t pid, int flags)
 	return syscall(SYS_pidfd_open, pid, flags);
 }
 
-static int
-get_message_sender_uid(const char *sender, uid_t *uid)
-{
-	sd_bus_message *reply = NULL;
-	int r;
-
-	r = sd_bus_call_method(
-			bus,
-			"org.freedesktop.DBus",
-			"/org/freedesktop/DBus",
-			"org.freedesktop.DBus",
-			"GetConnectionUnixUser",
-			NULL,
-			&reply,
-			"s",
-			sender);
-	if (r < 0)
-		return r;
-
-	if ((r = sd_bus_message_read(reply, "u", uid)) < 0)
-		return r;
-
-	return 0;
-}
-
-static int
-get_message_sender_pid(const char *sender, pid_t *pid)
-{
-	sd_bus_message *reply = NULL;
-	int r;
-
-	r = sd_bus_call_method(
-			bus,
-			"org.freedesktop.DBus",
-			"/org/freedesktop/DBus",
-			"org.freedesktop.DBus",
-			"GetConnectionUnixProcessID",
-			NULL,
-			&reply,
-			"s",
-			sender);
-	if (r < 0)
-		return r;
-
-	if ((r = sd_bus_message_read(reply, "u", pid)) < 0)
-		return r;
-
-	return 0;
-}
-
 static struct user *
 user_find(uid_t uid)
 {
@@ -306,26 +256,12 @@ tid_check_rttime(pid_t tid)
 }
 
 static struct thread *
-thread_get(sd_bus_message *m, pid_t pid, pid_t tid)
+thread_get(pid_t pid, pid_t tid, uid_t uid)
 {
-	const char *sender;
-	struct user *user;
 	struct thread *thread;
-	uid_t uid = -1;
+	struct user *user;
 	int r;
 
-	if ((sender = sd_bus_message_get_sender(m)) == NULL) {
-		errno = ENODATA;
-		return NULL;
-	}
-	if (pid == -1 && (r = get_message_sender_pid(sender, &pid)) < 0) {
-		errno = -r;
-		return NULL;
-	}
-	if ((r = get_message_sender_uid(sender, &uid)) < 0) {
-		errno = -r;
-		return NULL;
-	}
 	if ((user = user_find(uid)) == NULL)
 		return NULL;
 
@@ -341,21 +277,6 @@ thread_get(sd_bus_message *m, pid_t pid, pid_t tid)
 
 	return thread;
 }
-
-
-#if 0
-static int
-get_message_creds_pid(sd_bus_message *m, pid_t *pid)
-{
-	sd_bus_creds *c;
-	int r;
-	if ((c = sd_bus_message_get_creds(m)) == NULL)
-		return -ENODATA;
-	if ((r = sd_bus_creds_get_pid(c, pid)) < 0)
-		return r;
-	return 0;
-}
-#endif
 
 static int
 thread_set_realtime(struct thread *thread, uint32_t priority)
@@ -383,18 +304,89 @@ thread_set_realtime(struct thread *thread, uint32_t priority)
 }
 
 static int
+message_sender_get_pid(const char *sender, pid_t *pid)
+{
+	sd_bus_message *reply = NULL;
+	int r;
+
+	r = sd_bus_call_method(
+			bus,
+			"org.freedesktop.DBus",
+			"/org/freedesktop/DBus",
+			"org.freedesktop.DBus",
+			"GetConnectionUnixProcessID",
+			NULL,
+			&reply,
+			"s",
+			sender);
+	if (r < 0)
+		return r;
+
+	if ((r = sd_bus_message_read(reply, "u", pid)) < 0)
+		return r;
+
+	return 0;
+}
+
+
+static int
+message_sender_get_uid(const char *sender, uid_t *uid)
+{
+	sd_bus_message *reply = NULL;
+	int r;
+
+	r = sd_bus_call_method(
+			bus,
+			"org.freedesktop.DBus",
+			"/org/freedesktop/DBus",
+			"org.freedesktop.DBus",
+			"GetConnectionUnixUser",
+			NULL,
+			&reply,
+			"s",
+			sender);
+	if (r < 0)
+		return r;
+
+	if ((r = sd_bus_message_read(reply, "u", uid)) < 0)
+		return r;
+
+	return 0;
+}
+
+static int
+message_sender_get_pid_uid(sd_bus_message *m, pid_t *pid, uid_t *uid)
+{
+	const char *sender;
+	int r;
+
+	if ((sender = sd_bus_message_get_sender(m)) == NULL)
+		return -ENODATA;
+	if (pid && (r = message_sender_get_pid(sender, pid)) < 0)
+		return r;
+	if (uid && (r = message_sender_get_uid(sender, uid)) < 0)
+		return r;
+
+	return 0;
+}
+
+static int
 make_thread_realtime(sd_bus_message *m, void *userdata, sd_bus_error *error)
 {
 	struct thread *thread;
-	int r;
 	uint64_t tid;
 	uint32_t priority;
+	pid_t pid;
+	uid_t uid;
+	int r;
 
 	if ((r = sd_bus_message_read(m, "tu", &tid, &priority)) < 0) {
 		fprintf(stderr, "Failed to parse parameters: %s\n", strerror(-r));
 		return r;
 	}
-	if ((thread = thread_get(m, -1, tid)) == NULL)
+	if ((r = message_sender_get_pid_uid(m, &pid, &uid)) < 0)
+		return r;
+	if ((thread = thread_get(pid, tid, uid)) == NULL)
 		return -errno;
 	if ((r = thread_set_realtime(thread, priority)) < 0)
 		return r;
@@ -405,16 +397,18 @@ static int
 make_thread_realtime_with_pid(sd_bus_message *m, void *userdata, sd_bus_error *error)
 {
 	struct thread *thread;
-	pid_t pid;
-	uint64_t tid;
+	uint64_t pid, tid;
 	uint32_t priority;
+	uid_t uid;
 	int r;
 
 	if ((r = sd_bus_message_read(m, "ttu", &pid, &tid, &priority)) < 0) {
 		fprintf(stderr, "Failed to parse parameters: %s\n", strerror(-r));
 		return r;
 	}
-	if ((thread = thread_get(m, -1, tid)) == NULL)
+	if ((r = message_sender_get_pid_uid(m, NULL, &uid)) < 0)
+		return r;
+	if ((thread = thread_get(pid, tid, uid)) == NULL)
 		return -errno;
 	if ((r = thread_set_realtime(thread, priority)) < 0)
 		return r;
@@ -445,15 +439,19 @@ static int
 make_thread_high_priority(sd_bus_message *m, void *userdata, sd_bus_error *error)
 {
 	struct thread *thread;
-	int r;
-	pid_t tid;
+	uint64_t tid;
 	int32_t priority;
+	pid_t pid;
+	uid_t uid;
+	int r;
 
 	if ((r = sd_bus_message_read(m, "ti", &tid, &priority)) < 0) {
 		fprintf(stderr, "Failed to parse parameters: %s\n", strerror(-r));
 		return r;
 	}
-	if ((thread = thread_get(m, -1, tid)) == NULL)
+	if ((r = message_sender_get_pid_uid(m, &pid, &uid)) < 0)
+		return r;
+	if ((thread = thread_get(pid, tid, uid)) == NULL)
 		return -errno;
 	if ((r = set_high_priority(thread, priority)) < 0) {
 		fprintf(stderr, "set_high_priority: %s\n", strerror(-r));
@@ -466,16 +464,18 @@ static int
 make_thread_high_priority_with_pid(sd_bus_message *m, void *userdata, sd_bus_error *error)
 {
 	struct thread *thread;
-	int r;
-	pid_t pid;
-	pid_t tid;
+	uint64_t pid, tid;
 	int32_t priority;
+	uid_t uid;
+	int r;
 
 	if ((r = sd_bus_message_read(m, "tti", &pid, &tid, &priority)) < 0) {
 		fprintf(stderr, "Failed to parse parameters: %s\n", strerror(-r));
 		return r;
 	}
-	if ((thread = thread_get(m, -1, tid)) == NULL)
+	if ((r = message_sender_get_pid_uid(m, NULL, &uid)) < 0)
+		return r;
+	if ((thread = thread_get(pid, tid, uid)) == NULL)
 		return -errno;
 	if ((r = set_high_priority(thread, priority)) < 0) {
 		return r;
