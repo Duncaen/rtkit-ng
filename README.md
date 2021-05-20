@@ -8,6 +8,7 @@
 * [ ] Process owner checks
 * [ ] Policy Kit support
 * [ ] Watchdog?
+* [ ] Installation of data files
 
 ## Dependencies
 
