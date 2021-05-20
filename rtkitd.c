@@ -225,6 +225,8 @@ user_check_burst(struct user *user)
 static void
 process_free(struct process *proc)
 {
+	if (proc == NULL)
+		return;
 	TAILQ_REMOVE(&proc->user->processes, proc, entries);
 	if (epoll_ctl(epollfd, EPOLL_CTL_DEL, proc->fd, NULL) == -1) {
 		fprintf(stderr, "Failed to delete epoll event: %s\n", strerror(errno));
@@ -237,19 +239,22 @@ static struct process *
 user_process_find(struct user *user, pid_t pid, pid_t tid)
 {
 	struct process *proc;
+	int fd = -1;
+	int r;
 
 	TAILQ_FOREACH(proc, &user->processes, entries) {
 		if (proc->tid == tid)
 			return proc;
 	}
 
-	int fd = _pidfd_open(tid, 0);
-	if (fd == -1)
-		return NULL;
+	if ((fd = _pidfd_open(tid, 0)) == -1) {
+		r = -errno;
+		goto err;
+	}
 
 	if ((proc = calloc(1, sizeof *proc)) == NULL) {
-		close(fd);
-		return NULL;
+		r = -errno;
+		goto err;
 	}
 	proc->user = user;
 	proc->pid = pid;
@@ -262,11 +267,17 @@ user_process_find(struct user *user, pid_t pid, pid_t tid)
 		.data.ptr = proc,
 	};
 	if (epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, &event) == -1) {
-		process_free(proc);
-		return NULL;
+		r = -errno;
+		goto err;
 	}
 
 	return proc;
+
+err:
+	close(fd);
+	process_free(proc);
+	errno = -r;
+	return NULL;
 }
 
 static int
@@ -604,50 +615,55 @@ main(int argc, char *argv[])
 	int r;
 
 	if ((epollfd = epoll_create1(EPOLL_CLOEXEC)) == -1) {
+		r = -errno;
 		fprintf(stderr, "Failed to create epoll instance: %s\n", strerror(errno));
-		return 1;
+		goto err;
 	}
 
 	if ((r = sd_bus_default_system(&bus)) < 0) {
 		fprintf(stderr, "Failed to connect to system bus: %s\n", strerror(-r));
-		return 1;
+		goto err;
 	}
 	r = sd_bus_add_object_vtable(bus, &slot, "/org/freedesktop/RealtimeKit1", "org.freedesktop.RealtimeKit1", rtkit_vtable, &props);
 	if (r < 0) {
 		fprintf(stderr, "Failed to issue method call: %s\n", strerror(-r));
-		return 1;
+		goto err;
 	}
 	if ((r = sd_bus_request_name(bus, "org.freedesktop.RealtimeKit1", 0)) < 0) {
 		fprintf(stderr, "Failed to aquire service name: %s\n", strerror(-r));
-		return 1;
+		goto err;
 	}
 	int busfd = sd_bus_get_fd(bus);
 	if (busfd < 0) {
 		fprintf(stderr, "Failed to get bus file descriptor: %s\n", strerror(-busfd));
-		return 1;
+		r = -1;
+		goto err;
 	}
 	struct epoll_event event = {
 		.events = EPOLLIN,
 		.data.fd = busfd,
 	};
 	if (epoll_ctl(epollfd, EPOLL_CTL_ADD, busfd, &event) == -1) {
+		r = -errno;
 		fprintf(stderr, "Failed to add epoll event: %s\n", strerror(errno));
-		return 1;
+		goto err;
 	}
 	sigset_t mask;
 	sigemptyset(&mask);
 	sigaddset(&mask, SIGINT);
 	sigaddset(&mask, SIGTERM);
 	if (sigprocmask(SIG_BLOCK, &mask, NULL) == -1) {
+		r = -errno;
 		fprintf(stderr, "Failed to block signals: %s\n", strerror(errno));
-		return 1;
+		goto err;
 	}
 	int sigfd = signalfd(-1, &mask, SFD_CLOEXEC);
 	event.events = EPOLLIN;
 	event.data.fd = sigfd;
 	if (epoll_ctl(epollfd, EPOLL_CTL_ADD, sigfd, &event) == -1) {
+		r = -errno;
 		fprintf(stderr, "Failed to add epoll event: %s\n", strerror(errno));
-		return 1;
+		goto err;
 	}
 
 #ifdef HAVE_LIBSYSTEMD
@@ -657,8 +673,9 @@ main(int argc, char *argv[])
 	for (;;) {
 		int n = epoll_wait(epollfd, &event, 1, -1);
 		if (n == -1) {
+			r = -errno;
 			fprintf(stderr, "Failed to get epoll events: %s\n", strerror(errno));
-			return 1;
+			goto err;
 		}
 		if (event.data.fd == sigfd) {
 			struct signalfd_siginfo si;
@@ -681,7 +698,8 @@ main(int argc, char *argv[])
 
 	reset_known();
 
+err:
 	sd_bus_slot_unref(slot);
 	sd_bus_unref(bus);
-	return 0;
+	return r < 0 ? EXIT_FAILURE : EXIT_SUCCESS;
 }
