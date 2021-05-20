@@ -73,19 +73,18 @@ static struct properties props = {
 	.min_nice_level = -15,
 };
 
-struct process {
+struct thread {
 	struct user *user;
-	pid_t pid;
 	pid_t tid;
 	int fd;
-	TAILQ_ENTRY(process) entries;
+	TAILQ_ENTRY(thread) entries;
 };
 
 struct user {
 	uid_t uid;
 	time_t timestamp;
 	size_t num_actions;
-	TAILQ_HEAD(, process) processes;
+	TAILQ_HEAD(, thread) processes;
 	TAILQ_ENTRY(user) entries;
 };
 
@@ -223,28 +222,28 @@ user_check_burst(struct user *user)
 }
 
 static void
-process_free(struct process *proc)
+thread_free(struct thread *thread)
 {
-	if (proc == NULL)
+	if (thread == NULL)
 		return;
-	TAILQ_REMOVE(&proc->user->processes, proc, entries);
-	if (epoll_ctl(epollfd, EPOLL_CTL_DEL, proc->fd, NULL) == -1) {
+	TAILQ_REMOVE(&thread->user->processes, thread, entries);
+	if (epoll_ctl(epollfd, EPOLL_CTL_DEL, thread->fd, NULL) == -1) {
 		fprintf(stderr, "Failed to delete epoll event: %s\n", strerror(errno));
 	}
-	close(proc->fd);
-	free(proc);
+	close(thread->fd);
+	free(thread);
 }
 
-static struct process *
-user_process_find(struct user *user, pid_t pid, pid_t tid)
+static struct thread *
+user_thread_find(struct user *user, pid_t pid, pid_t tid)
 {
-	struct process *proc;
+	struct thread *thread;
 	int fd = -1;
 	int r;
 
-	TAILQ_FOREACH(proc, &user->processes, entries) {
-		if (proc->tid == tid)
-			return proc;
+	TAILQ_FOREACH(thread, &user->processes, entries) {
+		if (thread->tid == tid)
+			return thread;
 	}
 
 	if ((fd = _pidfd_open(tid, 0)) == -1) {
@@ -252,30 +251,29 @@ user_process_find(struct user *user, pid_t pid, pid_t tid)
 		goto err;
 	}
 
-	if ((proc = calloc(1, sizeof *proc)) == NULL) {
+	if ((thread = calloc(1, sizeof *thread)) == NULL) {
 		r = -errno;
 		goto err;
 	}
-	proc->user = user;
-	proc->pid = pid;
-	proc->tid = tid;
-	proc->fd = fd;
-	TAILQ_INSERT_TAIL(&user->processes, proc, entries);
+	thread->user = user;
+	thread->tid = tid;
+	thread->fd = fd;
+	TAILQ_INSERT_TAIL(&user->processes, thread, entries);
 
 	struct epoll_event event = {
 		.events = EPOLLIN,
-		.data.ptr = proc,
+		.data.ptr = thread,
 	};
 	if (epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, &event) == -1) {
 		r = -errno;
 		goto err;
 	}
 
-	return proc;
+	return thread;
 
 err:
 	close(fd);
-	process_free(proc);
+	thread_free(thread);
 	errno = -r;
 	return NULL;
 }
@@ -307,12 +305,12 @@ tid_check_rttime(pid_t tid)
 	return 0;
 }
 
-static struct process *
-process_get(sd_bus_message *m, pid_t pid, pid_t tid)
+static struct thread *
+thread_get(sd_bus_message *m, pid_t pid, pid_t tid)
 {
 	const char *sender;
 	struct user *user;
-	struct process *proc;
+	struct thread *thread;
 	uid_t uid = -1;
 	int r;
 
@@ -338,10 +336,10 @@ process_get(sd_bus_message *m, pid_t pid, pid_t tid)
 		return NULL;
 	}
 
-	if ((proc = user_process_find(user, pid, tid)) == NULL)
+	if ((thread = user_thread_find(user, pid, tid)) == NULL)
 		return NULL;
 
-	return proc;
+	return thread;
 }
 
 
@@ -360,7 +358,7 @@ get_message_creds_pid(sd_bus_message *m, pid_t *pid)
 #endif
 
 static int
-process_set_realtime(struct process *proc, uint32_t priority)
+thread_set_realtime(struct thread *thread, uint32_t priority)
 {
 	struct sched_param param = {0};
 
@@ -374,12 +372,12 @@ process_set_realtime(struct process *proc, uint32_t priority)
 		return -EPERM;
 
 	param.sched_priority = (int)priority;
-	if (_sched_setscheduler(proc->pid, sched_policy|SCHED_RESET_ON_FORK, &param) == -1) {
+	if (_sched_setscheduler(thread->tid, sched_policy|SCHED_RESET_ON_FORK, &param) == -1) {
 		return -errno;
 	}
 
-	fprintf(stderr, "Successfully made process %llu RT at level %u.\n",
-		(unsigned long long)proc->pid, priority);
+	fprintf(stderr, "Successfully made thread %llu RT at level %u.\n",
+		(unsigned long long)thread->tid, priority);
 
 	return 0;
 }
@@ -387,7 +385,7 @@ process_set_realtime(struct process *proc, uint32_t priority)
 static int
 make_thread_realtime(sd_bus_message *m, void *userdata, sd_bus_error *error)
 {
-	struct process *proc;
+	struct thread *thread;
 	int r;
 	uint64_t tid;
 	uint32_t priority;
@@ -396,9 +394,9 @@ make_thread_realtime(sd_bus_message *m, void *userdata, sd_bus_error *error)
 		fprintf(stderr, "Failed to parse parameters: %s\n", strerror(-r));
 		return r;
 	}
-	if ((proc = process_get(m, -1, tid)) == NULL)
+	if ((thread = thread_get(m, -1, tid)) == NULL)
 		return -errno;
-	if ((r = process_set_realtime(proc, priority)) < 0)
+	if ((r = thread_set_realtime(thread, priority)) < 0)
 		return r;
 	return sd_bus_reply_method_return(m, "");
 }
@@ -406,7 +404,7 @@ make_thread_realtime(sd_bus_message *m, void *userdata, sd_bus_error *error)
 static int
 make_thread_realtime_with_pid(sd_bus_message *m, void *userdata, sd_bus_error *error)
 {
-	struct process *proc;
+	struct thread *thread;
 	pid_t pid;
 	uint64_t tid;
 	uint32_t priority;
@@ -416,15 +414,15 @@ make_thread_realtime_with_pid(sd_bus_message *m, void *userdata, sd_bus_error *e
 		fprintf(stderr, "Failed to parse parameters: %s\n", strerror(-r));
 		return r;
 	}
-	if ((proc = process_get(m, -1, tid)) == NULL)
+	if ((thread = thread_get(m, -1, tid)) == NULL)
 		return -errno;
-	if ((r = process_set_realtime(proc, priority)) < 0)
+	if ((r = thread_set_realtime(thread, priority)) < 0)
 		return r;
 	return sd_bus_reply_method_return(m, "");
 }
 
 static int
-set_high_priority(struct process *proc, int32_t priority)
+set_high_priority(struct thread *thread, int32_t priority)
 {
 	struct sched_param param = {0};
 
@@ -433,20 +431,20 @@ set_high_priority(struct process *proc, int32_t priority)
 	if (priority < min_nice_level)
 		return -EPERM;
 
-	if (_sched_setscheduler(proc->pid, SCHED_OTHER|SCHED_RESET_ON_FORK, &param) == -1)
+	if (_sched_setscheduler(thread->tid, SCHED_OTHER|SCHED_RESET_ON_FORK, &param) == -1)
 		return -errno;
-	if (setpriority(PRIO_PROCESS, proc->pid, priority) == -1)
+	if (setpriority(PRIO_PROCESS, thread->tid, priority) == -1)
 		return -errno;
 
-	fprintf(stderr, "Successfully made process %llu high priority at nice level %i.\n",
-		(unsigned long long)proc->pid, priority);
+	fprintf(stderr, "Successfully made thread %llu high priority at nice level %i.\n",
+		(unsigned long long)thread->tid, priority);
 	return 0;
 }
 
 static int
 make_thread_high_priority(sd_bus_message *m, void *userdata, sd_bus_error *error)
 {
-	struct process *proc;
+	struct thread *thread;
 	int r;
 	pid_t tid;
 	int32_t priority;
@@ -455,9 +453,9 @@ make_thread_high_priority(sd_bus_message *m, void *userdata, sd_bus_error *error
 		fprintf(stderr, "Failed to parse parameters: %s\n", strerror(-r));
 		return r;
 	}
-	if ((proc = process_get(m, -1, tid)) == NULL)
+	if ((thread = thread_get(m, -1, tid)) == NULL)
 		return -errno;
-	if ((r = set_high_priority(proc, priority)) < 0) {
+	if ((r = set_high_priority(thread, priority)) < 0) {
 		fprintf(stderr, "set_high_priority: %s\n", strerror(-r));
 		return r;
 	}
@@ -467,7 +465,7 @@ make_thread_high_priority(sd_bus_message *m, void *userdata, sd_bus_error *error
 static int
 make_thread_high_priority_with_pid(sd_bus_message *m, void *userdata, sd_bus_error *error)
 {
-	struct process *proc;
+	struct thread *thread;
 	int r;
 	pid_t pid;
 	pid_t tid;
@@ -477,26 +475,26 @@ make_thread_high_priority_with_pid(sd_bus_message *m, void *userdata, sd_bus_err
 		fprintf(stderr, "Failed to parse parameters: %s\n", strerror(-r));
 		return r;
 	}
-	if ((proc = process_get(m, -1, tid)) == NULL)
+	if ((thread = thread_get(m, -1, tid)) == NULL)
 		return -errno;
-	if ((r = set_high_priority(proc, priority)) < 0) {
+	if ((r = set_high_priority(thread, priority)) < 0) {
 		return r;
 	}
 	return sd_bus_reply_method_return(m, "");
 }
 
 static int
-process_reset(struct process *proc)
+thread_reset(struct thread *thread)
 {
 	struct sched_param param = {0};
 	int r = 0;
 
-	if (_sched_setscheduler(proc->pid, SCHED_OTHER, &param) == -1) {
-		fprintf(stderr, "Failed to demote process %d: %s\n", proc->pid, strerror(errno));
+	if (_sched_setscheduler(thread->tid, SCHED_OTHER, &param) == -1) {
+		fprintf(stderr, "Failed to demote thread %d: %s\n", thread->tid, strerror(errno));
 		r = -1;
 	}
-	if (setpriority(PRIO_PROCESS, proc->pid, 0) == -1) {
-		fprintf(stderr, "Failed to demote process %d: %s\n", proc->pid, strerror(errno));
+	if (setpriority(PRIO_PROCESS, thread->tid, 0) == -1) {
+		fprintf(stderr, "Failed to demote thread %d: %s\n", thread->tid, strerror(errno));
 		r = -1;
 	}
 	return r;
@@ -518,12 +516,12 @@ static void
 reset_known(void)
 {
 	struct user *user;
-	struct process *proc;
+	struct thread *thread;
 	fprintf(stderr, "Demoting known real-time threads.\n");
 	size_t n = 0;
 	TAILQ_FOREACH(user, &users, entries) {
-		TAILQ_FOREACH(proc, &user->processes, entries) {
-			if (process_reset(proc) == 0)
+		TAILQ_FOREACH(thread, &user->processes, entries) {
+			if (thread_reset(thread) == 0)
 				n++;
 		}
 	}
@@ -692,7 +690,7 @@ main(int argc, char *argv[])
 				break;
 			}
 		} else {
-			process_free(event.data.ptr);
+			thread_free(event.data.ptr);
 		}
 	}
 
