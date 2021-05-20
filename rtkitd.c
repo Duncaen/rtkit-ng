@@ -105,9 +105,9 @@ static int
 get_message_sender_uid(const char *sender, uid_t *uid)
 {
 	sd_bus_message *reply = NULL;
-	int rv;
+	int r;
 
-	rv = sd_bus_call_method(
+	r = sd_bus_call_method(
 			bus,
 			"org.freedesktop.DBus",
 			"/org/freedesktop/DBus",
@@ -117,11 +117,11 @@ get_message_sender_uid(const char *sender, uid_t *uid)
 			&reply,
 			"s",
 			sender);
-	if (rv < 0) 
-		return rv;
+	if (r < 0)
+		return r;
 
-	if ((rv = sd_bus_message_read(reply, "u", uid)) < 0)
-		return rv;
+	if ((r = sd_bus_message_read(reply, "u", uid)) < 0)
+		return r;
 
 	return 0;
 }
@@ -130,9 +130,9 @@ static int
 get_message_sender_pid(const char *sender, pid_t *pid)
 {
 	sd_bus_message *reply = NULL;
-	int rv;
+	int r;
 
-	rv = sd_bus_call_method(
+	r = sd_bus_call_method(
 			bus,
 			"org.freedesktop.DBus",
 			"/org/freedesktop/DBus",
@@ -142,11 +142,11 @@ get_message_sender_pid(const char *sender, pid_t *pid)
 			&reply,
 			"s",
 			sender);
-	if (rv < 0) 
-		return rv;
+	if (r < 0)
+		return r;
 
-	if ((rv = sd_bus_message_read(reply, "u", pid)) < 0)
-		return rv;
+	if ((r = sd_bus_message_read(reply, "u", pid)) < 0)
+		return r;
 
 	return 0;
 }
@@ -207,17 +207,17 @@ lookup(struct user **user, struct process **process,
 		sd_bus_message *m, pid_t pid, pid_t tid)
 {
 	uid_t uid = -1;
-	int rv;
+	int r;
 	const char *sender;
 
 	if ((sender = sd_bus_message_get_sender(m)) == NULL)
 		return -ENODATA;
 
-	if (pid == -1 && (rv = get_message_sender_pid(sender, &pid)) < 0)
-		return rv;
+	if (pid == -1 && (r = get_message_sender_pid(sender, &pid)) < 0)
+		return r;
 
-	if ((rv = get_message_sender_uid(sender, &uid)) < 0)
-		return rv;
+	if ((r = get_message_sender_uid(sender, &uid)) < 0)
+		return r;
 
 	if ((*user = find_user(uid)) == NULL)
 		return -errno;
@@ -234,11 +234,11 @@ static int
 get_message_creds_pid(sd_bus_message *m, pid_t *pid)
 {
 	sd_bus_creds *c;
-	int rv;
+	int r;
 	if ((c = sd_bus_message_get_creds(m)) == NULL)
 		return -ENODATA;
-	if ((rv = sd_bus_creds_get_pid(c, pid)) < 0)
-		return rv;
+	if ((r = sd_bus_creds_get_pid(c, pid)) < 0)
+		return r;
 	return 0;
 }
 #endif
@@ -286,26 +286,26 @@ check_rttime(struct process *proc)
 static int
 make_thread_realtime(sd_bus_message *m, void *userdata, sd_bus_error *error)
 {
-	int rv;
+	int r;
 	uint64_t tid;
 	uint32_t priority;
 	struct user *user = NULL;
 	struct process *process = NULL;
 
-	if ((rv = sd_bus_message_read(m, "tu", &tid, &priority)) < 0) {
-		fprintf(stderr, "Failed to parse parameters: %s\n", strerror(-rv));
-		return rv;
+	if ((r = sd_bus_message_read(m, "tu", &tid, &priority)) < 0) {
+		fprintf(stderr, "Failed to parse parameters: %s\n", strerror(-r));
+		return r;
 	}
-	if ((rv = lookup(&user, &process, m, -1, tid)) < 0) {
-		return rv;
+	if ((r = lookup(&user, &process, m, -1, tid)) < 0) {
+		return r;
 	}
-	if ((rv = check_user(process, user)) < 0 ||
-	    (rv = check_rttime(process)) < 0) {
-		return rv;
+	if ((r = check_user(process, user)) < 0 ||
+	    (r = check_rttime(process)) < 0) {
+		return r;
 	}
-	if ((rv = set_realtime(process, priority)) < 0) {
-		fprintf(stderr, "set_realtime: %s\n", strerror(-rv));
-		return rv;
+	if ((r = set_realtime(process, priority)) < 0) {
+		fprintf(stderr, "set_realtime: %s\n", strerror(-r));
+		return r;
 	}
 	return sd_bus_reply_method_return(m, "");
 }
@@ -316,23 +316,23 @@ make_thread_realtime_with_pid(sd_bus_message *m, void *userdata, sd_bus_error *e
 	pid_t pid;
 	uint64_t tid;
 	uint32_t priority;
-	int rv;
+	int r;
 	struct user *user = NULL;
 	struct process *process = NULL;
 
-	if ((rv = sd_bus_message_read(m, "ttu", &pid, &tid, &priority)) < 0) {
-		fprintf(stderr, "Failed to parse parameters: %s\n", strerror(-rv));
-		return rv;
+	if ((r = sd_bus_message_read(m, "ttu", &pid, &tid, &priority)) < 0) {
+		fprintf(stderr, "Failed to parse parameters: %s\n", strerror(-r));
+		return r;
 	}
-	if ((rv = lookup(&user, &process, m, pid, tid)) < 0) {
-		return rv;
+	if ((r = lookup(&user, &process, m, pid, tid)) < 0) {
+		return r;
 	}
-	if ((rv = check_user(process, user)) < 0 ||
-	    (rv = check_rttime(process)) < 0) {
-		return rv;
+	if ((r = check_user(process, user)) < 0 ||
+	    (r = check_rttime(process)) < 0) {
+		return r;
 	}
-	if ((rv = set_realtime(process, priority)) < 0) {
-		return rv;
+	if ((r = set_realtime(process, priority)) < 0) {
+		return r;
 	}
 	return sd_bus_reply_method_return(m, "");
 }
@@ -360,25 +360,25 @@ set_high_priority(struct process *proc, int32_t priority)
 static int
 make_thread_high_priority(sd_bus_message *m, void *userdata, sd_bus_error *error)
 {
-	int rv;
+	int r;
 	pid_t tid;
 	int32_t priority;
 	struct user *user = NULL;
 	struct process *process = NULL;
 
-	if ((rv = sd_bus_message_read(m, "ti", &tid, &priority)) < 0) {
-		fprintf(stderr, "Failed to parse parameters: %s\n", strerror(-rv));
-		return rv;
+	if ((r = sd_bus_message_read(m, "ti", &tid, &priority)) < 0) {
+		fprintf(stderr, "Failed to parse parameters: %s\n", strerror(-r));
+		return r;
 	}
-	if ((rv = lookup(&user, &process, m, -1, tid)) < 0) {
-		return rv;
+	if ((r = lookup(&user, &process, m, -1, tid)) < 0) {
+		return r;
 	}
-	if ((rv = check_user(process, user)) < 0) {
-		return rv;
+	if ((r = check_user(process, user)) < 0) {
+		return r;
 	}
-	if ((rv = set_high_priority(process, priority)) < 0) {
-		fprintf(stderr, "set_high_priority: %s\n", strerror(-rv));
-		return rv;
+	if ((r = set_high_priority(process, priority)) < 0) {
+		fprintf(stderr, "set_high_priority: %s\n", strerror(-r));
+		return r;
 	}
 	return sd_bus_reply_method_return(m, "");
 }
@@ -386,25 +386,25 @@ make_thread_high_priority(sd_bus_message *m, void *userdata, sd_bus_error *error
 static int
 make_thread_high_priority_with_pid(sd_bus_message *m, void *userdata, sd_bus_error *error)
 {
-	int rv;
+	int r;
 	pid_t pid;
 	pid_t tid;
 	int32_t priority;
 	struct user *user = NULL;
 	struct process *process = NULL;
 
-	if ((rv = sd_bus_message_read(m, "tti", &pid, &tid, &priority)) < 0) {
-		fprintf(stderr, "Failed to parse parameters: %s\n", strerror(-rv));
-		return rv;
+	if ((r = sd_bus_message_read(m, "tti", &pid, &tid, &priority)) < 0) {
+		fprintf(stderr, "Failed to parse parameters: %s\n", strerror(-r));
+		return r;
 	}
-	if ((rv = lookup(&user, &process, m, pid, tid)) < 0) {
-		return rv;
+	if ((r = lookup(&user, &process, m, pid, tid)) < 0) {
+		return r;
 	}
-	if ((rv = check_user(process, user)) < 0) {
-		return rv;
+	if ((r = check_user(process, user)) < 0) {
+		return r;
 	}
-	if ((rv = set_high_priority(process, priority)) < 0) {
-		return rv;
+	if ((r = set_high_priority(process, priority)) < 0) {
+		return r;
 	}
 	return sd_bus_reply_method_return(m, "");
 }
@@ -533,24 +533,24 @@ int
 main(int argc, char *argv[])
 {
 	sd_bus_slot *slot = NULL;
-	int rv;
+	int r;
 
 	if ((epollfd = epoll_create1(EPOLL_CLOEXEC)) == -1) {
 		fprintf(stderr, "Failed to create epoll instance: %s\n", strerror(errno));
 		return 1;
 	}
 
-	if ((rv = sd_bus_default_system(&bus)) < 0) {
-		fprintf(stderr, "Failed to connect to system bus: %s\n", strerror(-rv));
+	if ((r = sd_bus_default_system(&bus)) < 0) {
+		fprintf(stderr, "Failed to connect to system bus: %s\n", strerror(-r));
 		return 1;
 	}
-	rv = sd_bus_add_object_vtable(bus, &slot, "/org/freedesktop/RealtimeKit1", "org.freedesktop.RealtimeKit1", rtkit_vtable, &props);
-	if (rv < 0) {
-		fprintf(stderr, "Failed to issue method call: %s\n", strerror(-rv));
+	r = sd_bus_add_object_vtable(bus, &slot, "/org/freedesktop/RealtimeKit1", "org.freedesktop.RealtimeKit1", rtkit_vtable, &props);
+	if (r < 0) {
+		fprintf(stderr, "Failed to issue method call: %s\n", strerror(-r));
 		return 1;
 	}
-	if ((rv = sd_bus_request_name(bus, "org.freedesktop.RealtimeKit1", 0)) < 0) {
-		fprintf(stderr, "Failed to aquire service name: %s\n", strerror(-rv));
+	if ((r = sd_bus_request_name(bus, "org.freedesktop.RealtimeKit1", 0)) < 0) {
+		fprintf(stderr, "Failed to aquire service name: %s\n", strerror(-r));
 		return 1;
 	}
 	int busfd = sd_bus_get_fd(bus);
@@ -602,8 +602,8 @@ main(int argc, char *argv[])
 			fprintf(stderr, "Got signal, exiting...\n");
 			break;
 		} else if (event.data.fd == busfd) {
-			if ((rv = sd_bus_process(bus, NULL)) < 0) {
-				fprintf(stderr, "Failed to process bus: %s\n", strerror(-rv));
+			if ((r = sd_bus_process(bus, NULL)) < 0) {
+				fprintf(stderr, "Failed to process bus: %s\n", strerror(-r));
 				break;
 			}
 		} else {
