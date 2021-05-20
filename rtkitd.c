@@ -164,8 +164,8 @@ user_check_burst(struct user *user)
 	}
 	user->num_actions++;
 	if (user->num_actions >= actions_per_burst_max) {
-		fprintf(stderr, "Warning: Reached burst limit for user %d, denying request.\n",
-				user->uid);
+		fprintf(stderr, "Warning: Reached burst limit for user %llu, denying request.\n",
+				(unsigned long long)user->uid);
 		return -EBUSY;
 	}
 	return 0;
@@ -480,11 +480,13 @@ thread_reset(struct thread *thread)
 
 	if (_sched_setscheduler(thread->tid, SCHED_OTHER, &param) == -1) {
 		r = -errno;
-		fprintf(stderr, "Failed to demote thread %d: %s\n", thread->tid, strerror(errno));
+		fprintf(stderr, "Failed to demote thread %llu: %s\n",
+				(unsigned long long)thread->tid, strerror(errno));
 	}
 	if (setpriority(PRIO_PROCESS, thread->tid, 0) == -1) {
 		r = -errno;
-		fprintf(stderr, "Failed to demote thread %d: %s\n", thread->tid, strerror(errno));
+		fprintf(stderr, "Failed to demote thread %llu: %s\n",
+				(unsigned long long)thread->tid, strerror(errno));
 	}
 	return r;
 }
