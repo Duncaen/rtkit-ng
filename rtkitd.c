@@ -329,9 +329,9 @@ thread_get(sd_bus_message *m, pid_t pid, pid_t tid)
 	if ((user = user_find(uid)) == NULL)
 		return NULL;
 
-	if ((r = tid_check_uid(pid, tid, user->uid)) < 0 ||
-	    (r = tid_check_rttime(tid)) < 0 ||
-	    (r = user_check_burst(user)) < 0) {
+	if ((r = user_check_burst(user)) < 0 ||
+	    (r = tid_check_uid(pid, tid, user->uid)) < 0 ||
+	    (r = tid_check_rttime(tid)) < 0) {
 		errno = -r;
 		return NULL;
 	}
