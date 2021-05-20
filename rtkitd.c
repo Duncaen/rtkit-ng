@@ -380,10 +380,8 @@ make_thread_realtime(sd_bus_message *m, void *userdata, sd_bus_error *error)
 	uid_t uid;
 	int r;
 
-	if ((r = sd_bus_message_read(m, "tu", &tid, &priority)) < 0) {
-		fprintf(stderr, "Failed to parse parameters: %s\n", strerror(-r));
+	if ((r = sd_bus_message_read(m, "tu", &tid, &priority)) < 0)
 		return r;
-	}
 	if ((r = message_sender_get_pid_uid(m, &pid, &uid)) < 0)
 		return r;
 	if ((thread = thread_get(pid, tid, uid)) == NULL)
@@ -402,10 +400,8 @@ make_thread_realtime_with_pid(sd_bus_message *m, void *userdata, sd_bus_error *e
 	uid_t uid;
 	int r;
 
-	if ((r = sd_bus_message_read(m, "ttu", &pid, &tid, &priority)) < 0) {
-		fprintf(stderr, "Failed to parse parameters: %s\n", strerror(-r));
+	if ((r = sd_bus_message_read(m, "ttu", &pid, &tid, &priority)) < 0)
 		return r;
-	}
 	if ((r = message_sender_get_pid_uid(m, NULL, &uid)) < 0)
 		return r;
 	if ((thread = thread_get(pid, tid, uid)) == NULL)
@@ -445,10 +441,8 @@ make_thread_high_priority(sd_bus_message *m, void *userdata, sd_bus_error *error
 	uid_t uid;
 	int r;
 
-	if ((r = sd_bus_message_read(m, "ti", &tid, &priority)) < 0) {
-		fprintf(stderr, "Failed to parse parameters: %s\n", strerror(-r));
+	if ((r = sd_bus_message_read(m, "ti", &tid, &priority)) < 0)
 		return r;
-	}
 	if ((r = message_sender_get_pid_uid(m, &pid, &uid)) < 0)
 		return r;
 	if ((thread = thread_get(pid, tid, uid)) == NULL)
@@ -469,10 +463,8 @@ make_thread_high_priority_with_pid(sd_bus_message *m, void *userdata, sd_bus_err
 	uid_t uid;
 	int r;
 
-	if ((r = sd_bus_message_read(m, "tti", &pid, &tid, &priority)) < 0) {
-		fprintf(stderr, "Failed to parse parameters: %s\n", strerror(-r));
+	if ((r = sd_bus_message_read(m, "tti", &pid, &tid, &priority)) < 0)
 		return r;
-	}
 	if ((r = message_sender_get_pid_uid(m, NULL, &uid)) < 0)
 		return r;
 	if ((thread = thread_get(pid, tid, uid)) == NULL)
