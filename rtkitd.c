@@ -279,12 +279,12 @@ thread_get(pid_t pid, pid_t tid, uid_t uid)
 }
 
 static int
-thread_set_realtime(struct thread *thread, uint32_t priority)
+thread_set_realtime(struct thread *thread, unsigned priority)
 {
 	struct sched_param param = {0};
 
-	if ((int32_t)priority < sched_get_priority_min(sched_policy) ||
-	    (int32_t)priority > sched_get_priority_max(sched_policy))
+	if ((int)priority < sched_get_priority_min(sched_policy) ||
+	    (int)priority > sched_get_priority_max(sched_policy))
 		return -EINVAL;
 
 	/* We always want to be able to get a higher RT priority than the client */
@@ -292,7 +292,7 @@ thread_set_realtime(struct thread *thread, uint32_t priority)
 	    priority > max_realtime_priority)
 		return -EPERM;
 
-	param.sched_priority = (int)priority;
+	param.sched_priority = priority;
 	if (_sched_setscheduler(thread->tid, sched_policy|SCHED_RESET_ON_FORK, &param) == -1) {
 		return -errno;
 	}
@@ -412,7 +412,7 @@ make_thread_realtime_with_pid(sd_bus_message *m, void *userdata, sd_bus_error *e
 }
 
 static int
-set_high_priority(struct thread *thread, int32_t priority)
+set_high_priority(struct thread *thread, int priority)
 {
 	struct sched_param param = {0};
 
