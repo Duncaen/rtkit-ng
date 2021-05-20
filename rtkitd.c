@@ -256,12 +256,14 @@ set_realtime(struct process *proc, int32_t priority)
 {
 	struct sched_param param = {0};
 
-	fprintf(stderr, "set_realtime: priority=%d\n", priority);
-
 	param.sched_priority = (int)priority;
 	if (_sched_setscheduler(proc->pid, sched_policy|SCHED_RESET_ON_FORK, &param) == -1) {
 		return -errno;
 	}
+
+	fprintf(stderr, "Successfully made process %llu RT at level %u.\n",
+		(unsigned long long)proc->pid, priority);
+
 	return 0;
 }
 
@@ -346,12 +348,13 @@ set_high_priority(struct process *proc, int32_t priority)
 	if (priority < props.min_nice_level)
 		return -EPERM;
 
-	fprintf(stderr, "set_high_priority: priority=%d\n", priority);
-
 	if (_sched_setscheduler(proc->pid, SCHED_OTHER|SCHED_RESET_ON_FORK, &param) == -1)
 		return -errno;
 	if (setpriority(PRIO_PROCESS, proc->pid, priority) == -1)
 		return -errno;
+
+	fprintf(stderr, "Successfully made process %llu high priority at nice level %i.\n",
+		(unsigned long long)proc->pid, priority);
 	return 0;
 }
 
@@ -607,7 +610,6 @@ main(int argc, char *argv[])
 		} else {
 			struct process *proc = event.data.ptr;
 			TAILQ_REMOVE(&processes, proc, entries);
-			fprintf(stderr, "pidfd lost: %d\n", proc->pid);
 			if (epoll_ctl(epollfd, EPOLL_CTL_DEL, proc->pidfd, NULL) == -1) {
 				fprintf(stderr, "Failed to delete epoll event: %s\n", strerror(errno));
 			}
