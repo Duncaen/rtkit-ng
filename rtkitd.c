@@ -127,10 +127,11 @@ static struct user *
 user_find(uid_t uid)
 {
 	struct user *user;
-	TAILQ_FOREACH(user, &users, entries) {
+
+	TAILQ_FOREACH(user, &users, entries)
 		if (user->uid == uid)
 			return user;
-	}
+
 	if ((user = calloc(1, sizeof *user)) == NULL)
 		return NULL;
 	user->uid = uid;
@@ -182,13 +183,11 @@ static struct thread *
 user_thread_find(struct user *user, pid_t pid, pid_t tid)
 {
 	struct thread *thread;
-	int fd = -1;
-	int r;
+	int fd = -1, r;
 
-	TAILQ_FOREACH(thread, &user->processes, entries) {
+	TAILQ_FOREACH(thread, &user->processes, entries)
 		if (thread->tid == tid)
 			return thread;
-	}
 
 	if ((fd = _pidfd_open(tid, 0)) == -1) {
 		r = -errno;
