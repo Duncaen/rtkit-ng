@@ -60,13 +60,13 @@
 #endif
 
 struct properties {
-	uint64_t rtt_usec_max;
+	uint64_t rttime_usec_max;
 	int32_t max_realtime_priority;
 	int32_t min_nice_level;
 };
 
 static struct properties props = {
-	.rtt_usec_max = 200000ULL,
+	.rttime_usec_max = 200000ULL,
 	.max_realtime_priority = 20,
 	.min_nice_level = -15,
 };
@@ -85,7 +85,24 @@ struct user {
 static TAILQ_HEAD(, user) users = TAILQ_HEAD_INITIALIZER(users);
 static TAILQ_HEAD(, process) processes = TAILQ_HEAD_INITIALIZER(processes);
 
+/* If we actually execute a request we temporarily upgrade our realtime priority to this level */
+static unsigned our_realtime_priority = 21;
+
+/* Normally we run at this nice level */
+static int our_nice_level = 1;
+
+/* The minimum nice level to hand out */
+static int min_nice_level = -15;
+
+/* The maximum realtime priority to hand out */
+static unsigned max_realtime_priority = 20;
+
+/* Enforce that clients have RLIMIT_RTTIME set to a value <= this */
+static unsigned long long rttime_usec_max = 200000ULL; /* 200 ms */
+
+/* Scheduling policy to use */
 static int sched_policy = SCHED_RR;
+
 static sd_bus *bus;
 static int epollfd;
 
@@ -244,9 +261,18 @@ get_message_creds_pid(sd_bus_message *m, pid_t *pid)
 #endif
 
 static int
-set_realtime(struct process *proc, int32_t priority)
+set_realtime(struct process *proc, uint32_t priority)
 {
 	struct sched_param param = {0};
+
+	if ((int32_t)priority < sched_get_priority_min(sched_policy) ||
+	    (int32_t)priority > sched_get_priority_max(sched_policy))
+		return -EINVAL;
+
+	/* We always want to be able to get a higher RT priority than the client */
+	if (priority >= our_realtime_priority ||
+	    priority > max_realtime_priority)
+		return -EPERM;
 
 	param.sched_priority = (int)priority;
 	if (_sched_setscheduler(proc->pid, sched_policy|SCHED_RESET_ON_FORK, &param) == -1) {
@@ -278,7 +304,7 @@ check_rttime(struct process *proc)
 	struct rlimit limit;
 	if (prlimit(proc->pid, RLIMIT_RTTIME, NULL, &limit) == -1)
 		return -errno;
-	if (limit.rlim_max > props.rtt_usec_max)
+	if (limit.rlim_max > rttime_usec_max)
 		return -EPERM;
 	return 0;
 }
@@ -344,7 +370,7 @@ set_high_priority(struct process *proc, int32_t priority)
 
 	if (priority < PRIO_MIN || priority >= PRIO_MAX)
 		return -EINVAL;
-	if (priority < props.min_nice_level)
+	if (priority < min_nice_level)
 		return -EPERM;
 
 	if (_sched_setscheduler(proc->pid, SCHED_OTHER|SCHED_RESET_ON_FORK, &param) == -1)
@@ -512,7 +538,7 @@ static const sd_bus_vtable rtkit_vtable[] = {
 			"RTTimeUSecMax",
 			"x",
 			NULL,
-			offsetof(struct properties, rtt_usec_max),
+			offsetof(struct properties, rttime_usec_max),
 			SD_BUS_VTABLE_PROPERTY_CONST),
 	SD_BUS_PROPERTY(
 			"MaxRealtimePriority",
