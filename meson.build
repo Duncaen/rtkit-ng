@@ -8,6 +8,8 @@ project(
 	]
 )
 
+add_project_arguments('-Wno-unused-parameter', language: 'c')
+
 cc = meson.get_compiler('c')
 
 if get_option('sd-bus-provider') == 'auto'
