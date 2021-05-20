@@ -412,7 +412,7 @@ make_thread_realtime_with_pid(sd_bus_message *m, void *userdata, sd_bus_error *e
 }
 
 static int
-set_high_priority(struct thread *thread, int priority)
+thread_set_high_priority(struct thread *thread, int priority)
 {
 	struct sched_param param = {0};
 
@@ -447,10 +447,8 @@ make_thread_high_priority(sd_bus_message *m, void *userdata, sd_bus_error *error
 		return r;
 	if ((thread = thread_get(pid, tid, uid)) == NULL)
 		return -errno;
-	if ((r = set_high_priority(thread, priority)) < 0) {
-		fprintf(stderr, "set_high_priority: %s\n", strerror(-r));
+	if ((r = thread_set_high_priority(thread, priority)) < 0)
 		return r;
-	}
 	return sd_bus_reply_method_return(m, "");
 }
 
@@ -469,9 +467,8 @@ make_thread_high_priority_with_pid(sd_bus_message *m, void *userdata, sd_bus_err
 		return r;
 	if ((thread = thread_get(pid, tid, uid)) == NULL)
 		return -errno;
-	if ((r = set_high_priority(thread, priority)) < 0) {
+	if ((r = thread_set_high_priority(thread, priority)) < 0)
 		return r;
-	}
 	return sd_bus_reply_method_return(m, "");
 }
 
