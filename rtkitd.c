@@ -67,12 +67,6 @@ struct properties {
 	int32_t min_nice_level;
 };
 
-static struct properties props = {
-	.rttime_usec_max = 200000ULL,
-	.max_realtime_priority = 20,
-	.min_nice_level = -15,
-};
-
 struct thread {
 	struct user *user;
 	pid_t tid;
@@ -613,7 +607,19 @@ main(int argc, char *argv[])
 		fprintf(stderr, "Failed to connect to system bus: %s\n", strerror(-r));
 		goto err;
 	}
-	r = sd_bus_add_object_vtable(bus, &slot, "/org/freedesktop/RealtimeKit1", "org.freedesktop.RealtimeKit1", rtkit_vtable, &props);
+
+	struct properties props = {
+		.rttime_usec_max = rttime_usec_max,
+		.max_realtime_priority = max_realtime_priority,
+		.min_nice_level = min_nice_level,
+	};
+	r = sd_bus_add_object_vtable(
+			bus,
+			&slot,
+			"/org/freedesktop/RealtimeKit1",
+			"org.freedesktop.RealtimeKit1",
+			rtkit_vtable,
+			&props);
 	if (r < 0) {
 		fprintf(stderr, "Failed to issue method call: %s\n", strerror(-r));
 		goto err;
