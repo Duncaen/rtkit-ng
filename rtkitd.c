@@ -24,6 +24,7 @@
 #include <sys/resource.h>
 #include <sys/signalfd.h>
 #include <sys/time.h>
+#include <sys/stat.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -261,6 +262,13 @@ set_realtime(struct process *proc, int32_t priority)
 static int
 check_user(struct process *proc, struct user *user)
 {
+	struct stat st;
+	char path[PATH_MAX];
+	snprintf(path, sizeof path, "/proc/%d", proc->pid);
+	if (stat(path, &st) == -1)
+		return -errno;
+	if (st.st_uid != user->uid)
+		return -EPERM;
 	return 0;
 }
 
