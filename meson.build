@@ -37,9 +37,19 @@ add_project_arguments('-DHAVE_' + sdbus.name().to_upper() + '=1', language: 'c')
 
 executable(
 	'rtkitd',
-	['rtkitd.c'],
+	'rtkitd.c',
 	dependencies: [
 		sdbus,
 	],
 	install: true,
+)
+
+executable(
+	'rtkit-test',
+	'rtkit-test.c',
+	'rtkit.c',
+	'rtkit.h',
+	dependencies: [
+		sdbus,
+	],
 )
