@@ -364,7 +364,7 @@ message_sender_get_pid_uid(sd_bus_message *m, pid_t *pid, uid_t *uid)
 }
 
 static int
-make_thread_realtime(sd_bus_message *m, void *userdata, sd_bus_error *error)
+method_make_thread_realtime(sd_bus_message *m, void *userdata, sd_bus_error *error)
 {
 	struct thread *thread;
 	uint64_t tid;
@@ -385,7 +385,7 @@ make_thread_realtime(sd_bus_message *m, void *userdata, sd_bus_error *error)
 }
 
 static int
-make_thread_realtime_with_pid(sd_bus_message *m, void *userdata, sd_bus_error *error)
+method_make_thread_realtime_with_pid(sd_bus_message *m, void *userdata, sd_bus_error *error)
 {
 	struct thread *thread;
 	uint64_t pid, tid;
@@ -425,7 +425,7 @@ thread_set_high_priority(struct thread *thread, int priority)
 }
 
 static int
-make_thread_high_priority(sd_bus_message *m, void *userdata, sd_bus_error *error)
+method_make_thread_high_priority(sd_bus_message *m, void *userdata, sd_bus_error *error)
 {
 	struct thread *thread;
 	uint64_t tid;
@@ -446,7 +446,7 @@ make_thread_high_priority(sd_bus_message *m, void *userdata, sd_bus_error *error
 }
 
 static int
-make_thread_high_priority_with_pid(sd_bus_message *m, void *userdata, sd_bus_error *error)
+method_make_thread_high_priority_with_pid(sd_bus_message *m, void *userdata, sd_bus_error *error)
 {
 	struct thread *thread;
 	uint64_t pid, tid;
@@ -531,25 +531,25 @@ static const sd_bus_vtable rtkit_vtable[] = {
 			"MakeThreadRealtime",
 			"tu",
 			NULL,
-			make_thread_realtime,
+			method_make_thread_realtime,
 			SD_BUS_VTABLE_UNPRIVILEGED),
 	SD_BUS_METHOD(
 			"MakeThreadRealtimeWithPID",
 			"ttu",
 			NULL,
-			make_thread_realtime_with_pid,
+			method_make_thread_realtime_with_pid,
 			SD_BUS_VTABLE_UNPRIVILEGED),
 	SD_BUS_METHOD(
 			"MakeThreadHighPriority",
 			"ti",
 			NULL,
-			make_thread_high_priority,
+			method_make_thread_high_priority,
 			SD_BUS_VTABLE_UNPRIVILEGED),
 	SD_BUS_METHOD(
 			"MakeThreadHighPriorityWithPID",
 			"tti",
 			NULL,
-			make_thread_high_priority_with_pid,
+			method_make_thread_high_priority_with_pid,
 			SD_BUS_VTABLE_UNPRIVILEGED),
 	SD_BUS_METHOD(
 			"ResetAll",
