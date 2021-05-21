@@ -8,7 +8,7 @@
 * [x] Process owner checks
 * [ ] Policy Kit support
 * [ ] Watchdog?
-* [ ] Per-User burst limits?
+* [x] Per-User burst limits?
 * [ ] Limits on how many processes might be able to set
 * [ ] Installation of data files
 * [ ] Privilege dropping
