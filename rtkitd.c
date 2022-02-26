@@ -20,11 +20,13 @@
 #define _DEFAULT_SOURCE
 #define _GNU_SOURCE
 #include <sys/epoll.h>
+#include <sys/poll.h>
 #include <sys/queue.h>
 #include <sys/resource.h>
 #include <sys/signalfd.h>
-#include <sys/time.h>
 #include <sys/stat.h>
+#include <sys/time.h>
+#include <sys/timerfd.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -590,6 +592,46 @@ static const sd_bus_vtable rtkit_vtable[] = {
 	SD_BUS_VTABLE_END,
 };
 
+#define USEC_PER_SEC  ((uint64_t) 1000000ULL)
+#define NSEC_PER_USEC ((uint64_t) 1000ULL)
+
+static int
+bus_epoll_events(struct epoll_event *event, int busfd, int timerfd)
+{
+	int r;
+	if ((r = sd_bus_get_events(bus)) < 0) {
+		fprintf(stderr, "sd_bus_get_events: %s\n", strerror(-r));
+		return r;
+	}
+	fprintf(stderr, "bus: events=%d\n", r);
+	event->events = 0;
+	event->data.fd = busfd;
+	if (r & POLLIN)
+		event->events |= EPOLLIN;
+	if (r & POLLOUT)
+		event->events |= EPOLLOUT;
+	fprintf(stderr, "bus: POLLIN=%d POLLOUT=%d\n", r & POLLIN, r & POLLOUT);
+	uint64_t until;
+	r = sd_bus_get_timeout(bus, &until);
+	if (r < 0) {
+		fprintf(stderr, "sd_bus_get_timeout: %s\n", strerror(-r));
+		return r;
+	}
+	fprintf(stderr, "bus: timeout=%lu\n", until);
+	struct itimerspec its = {0};
+	if (until != UINT64_MAX) {
+		its.it_value.tv_sec = (time_t)(until / USEC_PER_SEC);
+		its.it_value.tv_nsec = (long) ((until % USEC_PER_SEC) * NSEC_PER_USEC);
+	}
+	r = timerfd_settime(timerfd, 0, &its, NULL);
+	if (r < 0) {
+		r = -errno;
+		fprintf(stderr, "timerfd_settime: %s\n", strerror(errno));
+		return r;
+	}
+	return 0;
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -627,21 +669,41 @@ main(int argc, char *argv[])
 		fprintf(stderr, "Failed to aquire service name: %s\n", strerror(-r));
 		goto err;
 	}
+	do {
+		if ((r = sd_bus_process(bus, NULL)) < 0) {
+			fprintf(stderr, "Failed to process bus: %s\n", strerror(-r));
+			goto err;
+		}
+	} while (r > 0);
+
+	int bustimerfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK|TFD_CLOEXEC);
+	if (bustimerfd < 0) {
+		fprintf(stderr, "Failed to creater timer fd: %s\n", strerror(errno));
+		r = -1;
+		goto err;
+	}
 	int busfd = sd_bus_get_fd(bus);
 	if (busfd < 0) {
 		fprintf(stderr, "Failed to get bus file descriptor: %s\n", strerror(-busfd));
 		r = -1;
 		goto err;
 	}
-	struct epoll_event event = {
-		.events = EPOLLIN,
-		.data.fd = busfd,
-	};
+	struct epoll_event event;
+	if ((r = bus_epoll_events(&event, busfd, bustimerfd)) < 0)
+		goto err;
 	if (epoll_ctl(epollfd, EPOLL_CTL_ADD, busfd, &event) == -1) {
 		r = -errno;
 		fprintf(stderr, "Failed to add epoll event: %s\n", strerror(errno));
 		goto err;
 	}
+	event.events = EPOLLIN;
+	event.data.fd = bustimerfd;
+	if (epoll_ctl(epollfd, EPOLL_CTL_ADD, bustimerfd, &event) == -1) {
+		r = -errno;
+		fprintf(stderr, "Failed to add epoll event: %s\n", strerror(errno));
+		goto err;
+	}
+
 	sigset_t mask;
 	sigemptyset(&mask);
 	sigaddset(&mask, SIGINT);
@@ -667,6 +729,8 @@ main(int argc, char *argv[])
 	for (;;) {
 		int n = epoll_wait(epollfd, &event, 1, -1);
 		if (n == -1) {
+			if (errno == EINTR || errno == EAGAIN)
+				continue;
 			r = -errno;
 			fprintf(stderr, "Failed to get epoll events: %s\n", strerror(errno));
 			goto err;
@@ -680,11 +744,17 @@ main(int argc, char *argv[])
 			}
 			fprintf(stderr, "Got signal, exiting...\n");
 			break;
-		} else if (event.data.fd == busfd) {
-			if ((r = sd_bus_process(bus, NULL)) < 0) {
-				fprintf(stderr, "Failed to process bus: %s\n", strerror(-r));
+		} else if (event.data.fd == busfd || event.data.fd == bustimerfd) {
+			do {
+				if ((r = sd_bus_process(bus, NULL)) < 0) {
+					fprintf(stderr, "Failed to process bus: %s\n", strerror(-r));
+					goto err;
+				}
+			} while (r > 0);
+			if ((r = bus_epoll_events(&event, busfd, bustimerfd)) < 0)
 				break;
-			}
+			if (epoll_ctl(epollfd, EPOLL_CTL_MOD, busfd, &event) == -1)
+				return -errno;
 		} else {
 			thread_free(event.data.ptr);
 		}
