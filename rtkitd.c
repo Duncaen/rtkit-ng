@@ -440,6 +440,8 @@ method_make_thread_realtime(sd_bus_message *m, void *userdata, sd_bus_error *err
 		return r;
 	if ((thread = thread_get(pid, tid, uid)) == NULL)
 		return -errno;
+	if ((r = tid_check_rttime(tid)) < 0)
+		return r;
 	if ((r = thread_set_realtime(thread, priority)) < 0)
 		return r;
 	return sd_bus_reply_method_return(m, "");
@@ -460,6 +462,8 @@ method_make_thread_realtime_with_pid(sd_bus_message *m, void *userdata, sd_bus_e
 		return r;
 	if ((thread = thread_get(pid, tid, uid)) == NULL)
 		return -errno;
+	if ((r = tid_check_rttime(tid)) < 0)
+		return r;
 	if ((r = thread_set_realtime(thread, priority)) < 0)
 		return r;
 	return sd_bus_reply_method_return(m, "");
