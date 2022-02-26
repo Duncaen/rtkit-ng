@@ -970,6 +970,8 @@ main(int argc, char *argv[])
 	sigemptyset(&mask);
 	sigaddset(&mask, SIGINT);
 	sigaddset(&mask, SIGTERM);
+	sigaddset(&mask, SIGUSR1);
+	sigaddset(&mask, SIGUSR2);
 	if (sigprocmask(SIG_BLOCK, &mask, NULL) == -1) {
 		r = -errno;
 		fprintf(stderr, "Failed to block signals: %s\n", strerror(errno));
@@ -1002,6 +1004,14 @@ main(int argc, char *argv[])
 			ssize_t rd = read(sigfd, &si, sizeof si);
 			if (rd != sizeof si) {
 				fprintf(stderr, "Failed to read signal info: %s\n", strerror(errno));
+				continue;
+			}
+			switch (si.ssi_signo) {
+			case SIGUSR1:
+				reset_known();
+				continue;
+			case SIGUSR2:
+				reset_all();
 				continue;
 			}
 			fprintf(stderr, "Got signal, exiting...\n");
