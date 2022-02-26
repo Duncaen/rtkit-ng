@@ -63,16 +63,26 @@
 #define SCHED_RESET_ON_FORK 0x40000000
 #endif
 
-struct properties {
-	uint64_t rttime_usec_max;
-	int32_t max_realtime_priority;
-	int32_t min_nice_level;
+#ifndef TAILQ_FOREACH_SAFE
+#define	TAILQ_FOREACH_SAFE(var, head, field, tvar)			\
+	for ((var) = TAILQ_FIRST(head);					\
+	    (var) != NULL &&					        \
+	    ((tvar) = TAILQ_NEXT(var, field), 1);			\
+	    (var) = (tvar))
+#endif
+
+struct process {
+	struct user *user;
+	pid_t pid;
+	int fd;
+	TAILQ_HEAD(, thread) threads;
+	TAILQ_ENTRY(process) entries;
 };
 
 struct thread {
 	struct user *user;
+	struct process *process;
 	pid_t tid;
-	int fd;
 	TAILQ_ENTRY(thread) entries;
 };
 
@@ -80,7 +90,8 @@ struct user {
 	uid_t uid;
 	time_t timestamp;
 	size_t num_actions;
-	TAILQ_HEAD(, thread) processes;
+	size_t num_processes;
+	TAILQ_HEAD(, process) processes;
 	TAILQ_ENTRY(user) entries;
 };
 
@@ -171,56 +182,91 @@ user_check_burst(struct user *user)
 static void
 thread_free(struct thread *thread)
 {
-	if (thread == NULL)
+	if (!thread)
 		return;
-	TAILQ_REMOVE(&thread->user->processes, thread, entries);
-	if (epoll_ctl(epollfd, EPOLL_CTL_DEL, thread->fd, NULL) == -1) {
+	fprintf(stderr, "thread_free: %d\n", thread->tid);
+	TAILQ_REMOVE(&thread->process->threads, thread, entries);
+	free(thread);
+}
+static void
+process_free(struct process *process)
+{
+	if (!process)
+		return;
+	fprintf(stderr, "process_free: %d\n", process->pid);
+	TAILQ_REMOVE(&process->user->processes, process, entries);
+	if (epoll_ctl(epollfd, EPOLL_CTL_DEL, process->fd, NULL) == -1) {
 		fprintf(stderr, "Failed to delete epoll event: %s\n", strerror(errno));
 	}
-	close(thread->fd);
-	free(thread);
+	close(process->fd);
+	struct thread *thread;
+	while ((thread = TAILQ_FIRST(&process->threads)))
+		thread_free(thread);
+	free(process);
+}
+
+static struct process *
+user_process_find(struct user *user, pid_t pid)
+{
+	struct process *process;
+
+	TAILQ_FOREACH(process, &user->processes, entries)
+		if (process->pid == pid)
+			return process;
+
+	int r;
+	int fd = _pidfd_open(pid, 0);
+	if (fd == -1) {
+		r = -errno;
+		fprintf(stderr, "_pidfd_open: %d: %s\n", pid, strerror(errno));
+		errno = -r;
+		return NULL;
+	}
+	process = calloc(1, sizeof(*process));
+	if (!process) {
+		r = -errno;
+		close(fd);
+		errno = -r;
+		return NULL;
+	}
+	process->user = user;
+	process->fd = fd;
+	process->pid = pid;
+	TAILQ_INIT(&process->threads);
+	TAILQ_INSERT_TAIL(&user->processes, process, entries);
+
+	struct epoll_event event = {
+		.events = EPOLLIN,
+		.data.ptr = process,
+	};
+	if (epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, &event) == -1) {
+		r = -errno;
+		process_free(process);
+		errno = -r;
+		return NULL;
+	}
+	return process;
 }
 
 static struct thread *
 user_thread_find(struct user *user, pid_t pid, pid_t tid)
 {
-	struct thread *thread;
-	int fd = -1, r;
+	struct process *process = user_process_find(user, pid);
+	if (!process)
+		return NULL;
 
-	TAILQ_FOREACH(thread, &user->processes, entries)
+	struct thread *thread;
+	TAILQ_FOREACH(thread, &process->threads, entries)
 		if (thread->tid == tid)
 			return thread;
 
-	if ((fd = _pidfd_open(tid, 0)) == -1) {
-		r = -errno;
-		goto err;
-	}
-
-	if ((thread = calloc(1, sizeof *thread)) == NULL) {
-		r = -errno;
-		goto err;
-	}
-	thread->user = user;
+	thread = calloc(1, sizeof(*thread));
+	if (!thread)
+		return NULL;
 	thread->tid = tid;
-	thread->fd = fd;
-	TAILQ_INSERT_TAIL(&user->processes, thread, entries);
-
-	struct epoll_event event = {
-		.events = EPOLLIN,
-		.data.ptr = thread,
-	};
-	if (epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, &event) == -1) {
-		r = -errno;
-		goto err;
-	}
-
+	thread->process = process;
+	TAILQ_INSERT_TAIL(&process->threads, thread, entries);
 	return thread;
-
-err:
-	close(fd);
-	thread_free(thread);
-	errno = -r;
-	return NULL;
 }
 
 static int
@@ -498,17 +544,38 @@ method_reset_all(sd_bus_message *m, void *userdata, sd_bus_error *error)
 	return sd_bus_reply_method_return(m, "");
 }
 
+static int
+pid_check_tid(pid_t pid, pid_t tid)
+{
+	char path[PATH_MAX];
+	snprintf(path, sizeof path, "/proc/%d/task/%d", pid, tid);
+	int r = access(path, F_OK);
+	if (r < 0)
+		return -errno;
+	return 0;
+}
+
 static void
 reset_known(void)
 {
 	struct user *user;
-	struct thread *thread;
+	struct process *process, *tmp_process;
+	struct thread *thread, *tmp_thread;
 	fprintf(stderr, "Demoting known real-time threads.\n");
 	size_t n = 0;
 	TAILQ_FOREACH(user, &users, entries) {
-		TAILQ_FOREACH(thread, &user->processes, entries) {
-			if (thread_reset(thread) == 0)
-				n++;
+		TAILQ_FOREACH_SAFE(process, &user->processes, entries, tmp_process) {
+			TAILQ_FOREACH_SAFE(thread, &process->threads, entries, tmp_thread) {
+				if (pid_check_tid(process->pid, thread->tid) < 0) {
+					thread_free(thread);
+					continue;
+				}
+				if (thread_reset(thread) == 0)
+					n++;
+				thread_free(thread);
+			}
+			if (!TAILQ_FIRST(&process->threads))
+				process_free(process);
 		}
 	}
 	fprintf(stderr, "Demoted %zu threads.\n", n);
@@ -526,6 +593,12 @@ method_exit(sd_bus_message *m, void *userdata, sd_bus_error *error)
 {
 	return sd_bus_reply_method_return(m, "");
 }
+
+struct properties {
+	uint64_t rttime_usec_max;
+	int32_t max_realtime_priority;
+	int32_t min_nice_level;
+};
 
 static const sd_bus_vtable rtkit_vtable[] = {
 	SD_BUS_VTABLE_START(0),
@@ -756,7 +829,7 @@ main(int argc, char *argv[])
 			if (epoll_ctl(epollfd, EPOLL_CTL_MOD, busfd, &event) == -1)
 				return -errno;
 		} else {
-			thread_free(event.data.ptr);
+			process_free(event.data.ptr);
 		}
 	}
 
