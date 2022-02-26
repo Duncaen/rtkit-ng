@@ -30,6 +30,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <getopt.h>
 #include <limits.h>
 #include <sched.h>
 #include <signal.h>
@@ -120,6 +121,18 @@ static unsigned actions_burst_sec = 20;
 
 /* Refuse further requests if one user issues more than this many in ACTIONS_BURST_SEC time */
 static unsigned actions_per_burst_max = 25;
+
+/* Username we shall run under */
+static const char *username = "rtkit";
+
+/* How many users do we supervise at max? */
+static unsigned users_max = 2048;
+
+/* How many processes of a single user do we supervise at max? */
+static unsigned processes_per_user_max = 15;
+
+/* How many threads of a single user do we supervise at max? */
+static unsigned threads_per_user_max = 25;
 
 static sd_bus *bus;
 static int epollfd;
@@ -665,6 +678,110 @@ static const sd_bus_vtable rtkit_vtable[] = {
 	SD_BUS_VTABLE_END,
 };
 
+enum {
+	ARG_HELP = 256,
+	ARG_VERSION,
+	ARG_SCHEDULING_POLICY,
+	ARG_OUR_REALTIME_PRIORITY,
+	ARG_OUR_NICE_LEVEL,
+	ARG_MAX_REALTIME_PRIORITY,
+	ARG_MIN_NICE_LEVEL,
+	ARG_USER_NAME,
+	ARG_RTTIME_USEC_MAX,
+	ARG_USERS_MAX,
+	ARG_PROCESSES_PER_USER_MAX,
+	ARG_THREADS_PER_USER_MAX,
+	ARG_ACTIONS_BURST_SEC,
+	ARG_ACTIONS_PER_BURST_MAX,
+	ARG_NO_DROP_PRIVILEGES,
+	ARG_NO_CHROOT,
+	ARG_NO_LIMIT_RESOURCES,
+};
+
+static const struct option long_options[] = {
+	{ "help",                        no_argument,       0, ARG_HELP },
+	{ "version",                     no_argument,       0, ARG_VERSION },
+	{ "scheduling-policy",           required_argument, 0, ARG_SCHEDULING_POLICY },
+	{ "our-realtime-priority",       required_argument, 0, ARG_OUR_REALTIME_PRIORITY },
+	{ "our-nice-level",              required_argument, 0, ARG_OUR_NICE_LEVEL },
+	{ "max-realtime-priority",       required_argument, 0, ARG_MAX_REALTIME_PRIORITY },
+	{ "min-nice-level",              required_argument, 0, ARG_MIN_NICE_LEVEL },
+	{ "user-name",                   required_argument, 0, ARG_USER_NAME },
+	{ "rttime-usec-max",             required_argument, 0, ARG_RTTIME_USEC_MAX },
+	{ "users-max",                   required_argument, 0, ARG_USERS_MAX },
+	{ "processes-per-user-max",      required_argument, 0, ARG_PROCESSES_PER_USER_MAX },
+	{ "threads-per-user-max",        required_argument, 0, ARG_THREADS_PER_USER_MAX },
+	{ "actions-burst-sec",           required_argument, 0, ARG_ACTIONS_BURST_SEC },
+	{ "actions-per-burst-max",       required_argument, 0, ARG_ACTIONS_PER_BURST_MAX },
+	{ "no-drop-privileges",          no_argument,       0, ARG_NO_DROP_PRIVILEGES },
+	{ "no-chroot",                   no_argument,       0, ARG_NO_CHROOT },
+	{ "no-limit-resources",          no_argument,       0, ARG_NO_LIMIT_RESOURCES },
+	{ NULL, 0, 0, 0}
+};
+
+static void
+show_help(const char *argv0)
+{
+	static const char * const sp_names[] =  {
+		[SCHED_OTHER] = "OTHER",
+		[SCHED_BATCH] = "BATCH",
+		[SCHED_FIFO] = "FIFO",
+		[SCHED_RR] = "RR"
+	};
+	const char *exe = (exe = strrchr(argv0, '/')) ? exe++ : argv0;
+	printf("%s [options]\n\n"
+		"COMMANDS:\n"
+		"  -h, --help                          Show this help\n"
+		"OPTIONS:\n"
+		"      --user-name=USER                Run daemon as user (%s)\n\n"
+		"      --scheduling-policy=(RR|FIFO)   Choose scheduling policy (%s)\n"
+		"      --our-realtime-priority=[%i..%i] Realtime priority for the daemon (%u)\n"
+		"      --our-nice-level=[%i..%i]      Nice level for the daemon (%i)\n"
+		"      --max-realtime-priority=[%i..%i] Max realtime priority for clients (%u)\n"
+		"      --min-nice-level=[%i..%i]      Min nice level for clients (%i)\n\n"
+		"      --rttime-usec-max=USEC          Require clients to have set RLIMIT_RTTIME\n"
+		"                                      not greater than this (%llu)\n\n"
+		"      --users-max=INT                 How many users this daemon will serve at\n"
+		"                                      max at the same time (%u)\n"
+		"      --processes-per-user-max=INT    How many processes this daemon will serve\n"
+		"                                      at max per user at the same time (%u)\n"
+		"      --threads-per-user-max=INT      How many threads this daemon will serve\n"
+		"                                      at max per user at the same time (%u)\n\n"
+		"      --actions-burst-sec=SEC         Enforce requests limits in this time (%u)\n"
+		"      --actions-per-burst-max=INT     Allow this many requests per burst (%u)\n\n"
+		"      --no-drop-privileges            Don't drop privileges\n"
+		"      --no-chroot                     Don't chroot\n"
+		"      --no-limit-resources            Don't limit daemon's resources\n",
+		exe,
+		username,
+		sp_names[sched_policy],
+		sched_get_priority_min(sched_policy), sched_get_priority_max(sched_policy), our_realtime_priority,
+		PRIO_MIN, PRIO_MAX-1, our_nice_level,
+		sched_get_priority_min(sched_policy), sched_get_priority_max(sched_policy), max_realtime_priority,
+		PRIO_MIN, PRIO_MAX-1, min_nice_level,
+		rttime_usec_max,
+		users_max,
+		processes_per_user_max,
+		threads_per_user_max,
+		actions_burst_sec,
+		actions_per_burst_max);
+}
+
+static long long
+parse_num(const char *arg, long long min, long long max)
+{
+	long long ll;
+	char *e = NULL;
+	errno = 0;
+	ll = strtoll(optarg, &e, 0);
+	if (!e || *e) {
+		errno = EINVAL;
+	} else if (ll < min || ll > max){
+		errno = ERANGE;
+	}
+	return errno ? 0 : ll;
+}
+
 #define USEC_PER_SEC  ((uint64_t) 1000000ULL)
 #define NSEC_PER_USEC ((uint64_t) 1000ULL)
 
@@ -710,6 +827,74 @@ main(int argc, char *argv[])
 {
 	sd_bus_slot *slot = NULL;
 	int r;
+
+	while ((r = getopt_long(argc, argv, "h", long_options, NULL)) != -1) {
+		switch (r) {
+		case 'h':
+		case ARG_HELP:
+			show_help(argv[0]);
+			return 0;
+		case ARG_SCHEDULING_POLICY:
+			if (strcasecmp(optarg, "rr") == 0) {
+				sched_policy = SCHED_RR;
+			} else if (strcasecmp(optarg, "fifo") == 0) {
+				sched_policy = SCHED_FIFO;
+			} else {
+				fprintf(stderr, "--scheduling-policy parameter: %s.\n", strerror(EINVAL));
+				return 1;
+			}
+			break;
+		case ARG_ACTIONS_BURST_SEC:
+			if ((actions_burst_sec = parse_num(optarg, 1, UINT_MAX)) == 0 && errno != 0) {
+				fprintf(stderr, "--actions-burst-sec parameter: %s\n", strerror(errno));
+				return 1;
+			}
+			break;
+		case ARG_ACTIONS_PER_BURST_MAX:
+			if ((actions_per_burst_max = parse_num(optarg, 1, UINT_MAX)) == 0 && errno != 0) {
+				fprintf(stderr, "--actions-per-burst-max parameter: %s\n", strerror(errno));
+				return 1;
+			}
+			break;
+		case ARG_MAX_REALTIME_PRIORITY:
+			if ((max_realtime_priority = parse_num(optarg,
+					sched_get_priority_min(sched_policy),
+					sched_get_priority_max(sched_policy))) == 0 && errno != 0) {
+				fprintf(stderr, "--max-realtime-priority parameter: %s\n", strerror(errno));
+				return 1;
+			}
+			break;
+		case ARG_MIN_NICE_LEVEL:
+			if ((min_nice_level = parse_num(optarg, PRIO_MIN, PRIO_MAX+1)) == 0 && errno != 0) {
+				fprintf(stderr, "--min-nice-level parameter: %s\n", strerror(errno));
+				return 1;
+			}
+			break;
+		case ARG_RTTIME_USEC_MAX:
+			if ((rttime_usec_max = parse_num(optarg, 1, ULLONG_MAX)) == 0 && errno != 0) {
+				fprintf(stderr, "--rttime-usec-max parameter: %s\n", strerror(errno));
+				return 1;
+			}
+			break;
+		case ARG_USERS_MAX:
+			if ((users_max = parse_num(optarg, 1, UINT_MAX)) == 0 && errno != 0) {
+				fprintf(stderr, "--users-max parameter: %s\n", strerror(errno));
+				return 1;
+			}
+			break;
+		case ARG_PROCESSES_PER_USER_MAX:
+			if ((processes_per_user_max = parse_num(optarg, 1, UINT_MAX)) == 0 && errno != 0) {
+				fprintf(stderr, "--processes-per-user-max parameter: %s\n", strerror(errno));
+				return 1;
+			}
+			break;
+		case ARG_THREADS_PER_USER_MAX:
+			if ((threads_per_user_max = parse_num(optarg, 1, UINT_MAX)) == 0 && errno != 0) {
+				fprintf(stderr, "--threads-per-user-max parameter: %s\n", strerror(errno));
+				return 1;
+			}
+		}
+	}
 
 	if ((epollfd = epoll_create1(EPOLL_CLOEXEC)) == -1) {
 		r = -errno;
