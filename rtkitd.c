@@ -609,9 +609,10 @@ reset_known(void)
 					thread_free(thread);
 					continue;
 				}
-				if (thread_reset(thread) == 0)
+				if (thread_reset(thread) == 0) {
+					thread_free(thread);
 					n++;
-				thread_free(thread);
+				}
 			}
 			if (!TAILQ_FIRST(&process->threads))
 				process_free(process);
