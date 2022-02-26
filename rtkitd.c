@@ -272,6 +272,41 @@ user_process_find(struct user *user, pid_t pid)
 	return process;
 }
 
+static int
+pid_check_tid(pid_t pid, pid_t tid)
+{
+	char path[PATH_MAX];
+	snprintf(path, sizeof path, "/proc/%d/task/%d", pid, tid);
+	int r = access(path, F_OK);
+	if (r < 0)
+		return -errno;
+	return 0;
+}
+
+static void
+threads_cleanup(void)
+{
+	struct user *user;
+	struct process *process, *tmp_process;
+	struct thread *thread, *tmp_thread;
+	size_t n = 0;
+	TAILQ_FOREACH(user, &users, entries) {
+		TAILQ_FOREACH_SAFE(process, &user->processes, entries, tmp_process) {
+			TAILQ_FOREACH_SAFE(thread, &process->threads, entries, tmp_thread) {
+				int r = pid_check_tid(process->pid, thread->tid);
+				if (r == -ENOENT) {
+					thread_free(thread);
+					n++;
+				}
+			}
+			if (!TAILQ_FIRST(&process->threads))
+				process_free(process);
+		}
+	}
+	if (n > 0)
+		fprintf(stderr, "Cleaned up %zu threads.\n", n);
+}
+
 static struct thread *
 user_thread_find(struct user *user, pid_t pid, pid_t tid)
 {
@@ -283,6 +318,10 @@ user_thread_find(struct user *user, pid_t pid, pid_t tid)
 	TAILQ_FOREACH(thread, &process->threads, entries)
 		if (thread->tid == tid)
 			return thread;
+
+	/* cleanup threads if we reach the limit since we can't track them with pidfds */
+	if (user->num_threads >= threads_per_user_max)
+		threads_cleanup();
 
 	if (user->num_threads >= threads_per_user_max) {
 		fprintf(stderr, "Warning: Reached maximum threads limit for user %d, denying request.\n", user->uid);
@@ -601,17 +640,6 @@ method_reset_all(sd_bus_message *m, void *userdata, sd_bus_error *error)
 	return sd_bus_reply_method_return(m, "");
 }
 
-static int
-pid_check_tid(pid_t pid, pid_t tid)
-{
-	char path[PATH_MAX];
-	snprintf(path, sizeof path, "/proc/%d/task/%d", pid, tid);
-	int r = access(path, F_OK);
-	if (r < 0)
-		return -errno;
-	return 0;
-}
-
 static void
 reset_known(void)
 {
@@ -623,8 +651,11 @@ reset_known(void)
 	TAILQ_FOREACH(user, &users, entries) {
 		TAILQ_FOREACH_SAFE(process, &user->processes, entries, tmp_process) {
 			TAILQ_FOREACH_SAFE(thread, &process->threads, entries, tmp_thread) {
-				if (pid_check_tid(process->pid, thread->tid) < 0) {
-					thread_free(thread);
+				int r = pid_check_tid(process->pid, thread->tid);
+				if (r < 0) {
+					if (r == -ENOENT) {
+						thread_free(thread);
+					}
 					continue;
 				}
 				if (thread_reset(thread) == 0) {
