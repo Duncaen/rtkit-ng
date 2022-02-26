@@ -333,24 +333,37 @@ thread_get(pid_t pid, pid_t tid, uid_t uid)
 }
 
 static int
-thread_set_realtime(struct thread *thread, unsigned priority)
+set_realtime(pid_t tid, int priority)
 {
 	struct sched_param param = {0};
 
+	param.sched_priority = priority;
+	if (_sched_setscheduler(tid, sched_policy|SCHED_RESET_ON_FORK, &param) == -1) {
+		int r = -errno;
+		fprintf(stderr, "Failed to set scheduler: %s\n", strerror(-r));
+		return r;
+	}
+
+	return 0;
+}
+
+static int
+thread_set_realtime(struct thread *thread, unsigned priority)
+{
+	int r;
+
 	if ((int)priority < sched_get_priority_min(sched_policy) ||
-	    (int)priority > sched_get_priority_max(sched_policy))
+	    (int)priority > sched_get_priority_max(sched_policy)) {
+		fprintf(stderr, "invalid priority\n");
 		return -EINVAL;
+	}
 
 	/* We always want to be able to get a higher RT priority than the client */
 	if (priority >= our_realtime_priority ||
 	    priority > max_realtime_priority)
 		return -EPERM;
-
-	param.sched_priority = priority;
-	if (_sched_setscheduler(thread->tid, sched_policy|SCHED_RESET_ON_FORK, &param) == -1) {
-		return -errno;
-	}
-
+	if ((r = set_realtime(thread->tid, priority)) < 0)
+		return r;
 	fprintf(stderr, "Successfully made thread %llu RT at level %u.\n",
 		(unsigned long long)thread->tid, priority);
 
@@ -470,20 +483,29 @@ method_make_thread_realtime_with_pid(sd_bus_message *m, void *userdata, sd_bus_e
 }
 
 static int
-thread_set_high_priority(struct thread *thread, int priority)
+set_high_priority(pid_t tid, int priority)
 {
 	struct sched_param param = {0};
+
+	if (_sched_setscheduler(tid, SCHED_OTHER|SCHED_RESET_ON_FORK, &param) == -1)
+		return -errno;
+	if (setpriority(PRIO_PROCESS, tid, priority) == -1)
+		return -errno;
+
+	return 0;
+}
+
+static int
+thread_set_high_priority(struct thread *thread, int priority)
+{
+	int r;
 
 	if (priority < PRIO_MIN || priority >= PRIO_MAX)
 		return -EINVAL;
 	if (priority < min_nice_level)
 		return -EPERM;
-
-	if (_sched_setscheduler(thread->tid, SCHED_OTHER|SCHED_RESET_ON_FORK, &param) == -1)
-		return -errno;
-	if (setpriority(PRIO_PROCESS, thread->tid, priority) == -1)
-		return -errno;
-
+	if ((r = set_high_priority(thread->tid, priority)) < 0)
+		return r;
 	fprintf(stderr, "Successfully made thread %llu high priority at nice level %i.\n",
 		(unsigned long long)thread->tid, priority);
 	return 0;
