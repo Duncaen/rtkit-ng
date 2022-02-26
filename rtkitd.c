@@ -197,7 +197,6 @@ thread_free(struct thread *thread)
 {
 	if (!thread)
 		return;
-	fprintf(stderr, "thread_free: %d\n", thread->tid);
 	TAILQ_REMOVE(&thread->process->threads, thread, entries);
 	free(thread);
 }
@@ -206,7 +205,6 @@ process_free(struct process *process)
 {
 	if (!process)
 		return;
-	fprintf(stderr, "process_free: %d\n", process->pid);
 	TAILQ_REMOVE(&process->user->processes, process, entries);
 	if (epoll_ctl(epollfd, EPOLL_CTL_DEL, process->fd, NULL) == -1) {
 		fprintf(stderr, "Failed to delete epoll event: %s\n", strerror(errno));
@@ -820,21 +818,18 @@ bus_epoll_events(struct epoll_event *event, int busfd, int timerfd)
 		fprintf(stderr, "sd_bus_get_events: %s\n", strerror(-r));
 		return r;
 	}
-	fprintf(stderr, "bus: events=%d\n", r);
 	event->events = 0;
 	event->data.fd = busfd;
 	if (r & POLLIN)
 		event->events |= EPOLLIN;
 	if (r & POLLOUT)
 		event->events |= EPOLLOUT;
-	fprintf(stderr, "bus: POLLIN=%d POLLOUT=%d\n", r & POLLIN, r & POLLOUT);
 	uint64_t until;
 	r = sd_bus_get_timeout(bus, &until);
 	if (r < 0) {
 		fprintf(stderr, "sd_bus_get_timeout: %s\n", strerror(-r));
 		return r;
 	}
-	fprintf(stderr, "bus: timeout=%lu\n", until);
 	struct itimerspec its = {0};
 	if (until != UINT64_MAX) {
 		its.it_value.tv_sec = (time_t)(until / USEC_PER_SEC);
