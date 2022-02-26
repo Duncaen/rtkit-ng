@@ -56,3 +56,17 @@ executable(
 	],
     install: false,
 )
+
+
+thread_dep = dependency('threads')
+executable(
+	'rtkit-torture',
+	'rtkit-torture.c',
+	'rtkit.c',
+	'rtkit.h',
+	dependencies: [
+		sdbus,
+        thread_dep,
+	],
+    install: false,
+)
