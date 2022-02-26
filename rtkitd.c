@@ -89,7 +89,7 @@ struct thread {
 
 struct user {
 	uid_t uid;
-	time_t timestamp;
+	time_t burst_timestamp;
 	size_t num_actions;
 	size_t num_processes;
 	TAILQ_HEAD(, process) processes;
@@ -161,7 +161,7 @@ user_find(uid_t uid)
 	if ((user = calloc(1, sizeof *user)) == NULL)
 		return NULL;
 	user->uid = uid;
-	user->timestamp = time(NULL);
+	user->burst_timestamp = time(NULL);
 	TAILQ_INIT(&user->processes);
 	TAILQ_INSERT_TAIL(&users, user, entries);
 	return user;
@@ -171,7 +171,7 @@ static bool
 user_in_burst(struct user *user)
 {
 	time_t now = time(NULL);
-	return now < user->timestamp + actions_burst_sec;
+	return now < user->burst_timestamp + actions_burst_sec;
 }
 
 static int
@@ -179,7 +179,7 @@ user_check_burst(struct user *user)
 {
 	if (!user_in_burst(user)) {
 		/* Restart burst phase */
-		user->timestamp = time(NULL);
+		user->burst_timestamp = time(NULL);
 		user->num_actions = 0;
 		return 0;
 	}
