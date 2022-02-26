@@ -54,4 +54,5 @@ executable(
 	dependencies: [
 		sdbus,
 	],
+    install: false,
 )
