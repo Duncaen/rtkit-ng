@@ -92,6 +92,7 @@ struct user {
 	time_t burst_timestamp;
 	size_t num_actions;
 	size_t num_processes;
+	size_t num_threads;
 	TAILQ_HEAD(, process) processes;
 	TAILQ_ENTRY(user) entries;
 };
@@ -198,21 +199,26 @@ thread_free(struct thread *thread)
 	if (!thread)
 		return;
 	TAILQ_REMOVE(&thread->process->threads, thread, entries);
+	if (thread->process->user->num_threads > 0)
+		thread->process->user->num_threads--;
 	free(thread);
 }
+
 static void
 process_free(struct process *process)
 {
 	if (!process)
 		return;
-	TAILQ_REMOVE(&process->user->processes, process, entries);
+	struct thread *thread;
+	while ((thread = TAILQ_FIRST(&process->threads)))
+		thread_free(thread);
 	if (epoll_ctl(epollfd, EPOLL_CTL_DEL, process->fd, NULL) == -1) {
 		fprintf(stderr, "Failed to delete epoll event: %s\n", strerror(errno));
 	}
 	close(process->fd);
-	struct thread *thread;
-	while ((thread = TAILQ_FIRST(&process->threads)))
-		thread_free(thread);
+	TAILQ_REMOVE(&process->user->processes, process, entries);
+	if (process->user->num_processes > 0)
+		process->user->num_processes--;
 	free(process);
 }
 
@@ -224,6 +230,12 @@ user_process_find(struct user *user, pid_t pid)
 	TAILQ_FOREACH(process, &user->processes, entries)
 		if (process->pid == pid)
 			return process;
+
+	if (user->num_processes >= processes_per_user_max) {
+		fprintf(stderr, "Warning: Reached maximum process limit for user %d, denying request.\n", user->uid);
+		errno = EBUSY;
+		return NULL;
+	}
 
 	int r;
 	int fd = _pidfd_open(pid, 0);
@@ -245,6 +257,7 @@ user_process_find(struct user *user, pid_t pid)
 	process->pid = pid;
 	TAILQ_INIT(&process->threads);
 	TAILQ_INSERT_TAIL(&user->processes, process, entries);
+	user->num_processes++;
 
 	struct epoll_event event = {
 		.events = EPOLLIN,
@@ -271,12 +284,19 @@ user_thread_find(struct user *user, pid_t pid, pid_t tid)
 		if (thread->tid == tid)
 			return thread;
 
+	if (user->num_threads >= threads_per_user_max) {
+		fprintf(stderr, "Warning: Reached maximum threads limit for user %d, denying request.\n", user->uid);
+		errno = EBUSY;
+		return NULL;
+	}
+
 	thread = calloc(1, sizeof(*thread));
 	if (!thread)
 		return NULL;
 	thread->tid = tid;
 	thread->process = process;
 	TAILQ_INSERT_TAIL(&process->threads, thread, entries);
+	user->num_threads++;
 	return thread;
 }
 
